@@ -127,7 +127,7 @@ func DefaultErrRespLoggingFunc(ctx context.Context, logger xslog.Logger, err err
 	attrs = append(attrs, slog.Any("x.http.response.err.cause", cause))
 
 	if v := xerrors.Stacktrace(cause); v != nil {
-		attrs = append(attrs, slog.String("x.http.response.err.stacktrace", v.String()))
+		attrs = append(attrs, slog.String("code.stacktrace", v.String()))
 	}
 
 	if includeRemediation {

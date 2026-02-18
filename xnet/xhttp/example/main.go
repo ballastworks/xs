@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -422,6 +423,31 @@ func main() {
 			xhttp.SetDefaultResponseFactory(respf)
 
 			//
+			// Load default options
+			//
+
+			listenHost := "127.0.0.1"
+			listenPort := "8080"
+
+			if s, ok := os.LookupEnv("LISTEN_HOST"); ok {
+				listenHost = s
+			}
+
+			if s, ok := os.LookupEnv("LISTEN_PORT"); ok {
+				var v string
+				n, err := strconv.ParseUint(s, 10, 16)
+				if err == nil {
+					v = strconv.Itoa(int(n))
+				}
+				if err != nil || v != s {
+					logger.WithErr(ctx, err).Error(ctx, "failed to parse listen port")
+					panic(err)
+				}
+
+				listenPort = v
+			}
+
+			//
 			// Setup Router
 			//
 
@@ -462,13 +488,13 @@ func main() {
 			//
 			// may sample upstream services to make sure they are healthy before
 			// returning a likely sticky success response
-			rt.Get("/ready", alwaysOKHandler)
+			rt.Get("/readyz", alwaysOKHandler)
 
 			// ongoing liveness probe handler
 			//
 			// if this ever returns an error it's a strong signal
 			// for the orchestration layers to terminate the instance
-			rt.Get("/healthcheck", alwaysOKHandler)
+			rt.Get("/healthz", alwaysOKHandler)
 
 			//
 			// Setup Server
@@ -476,7 +502,7 @@ func main() {
 
 			srv, err = xhttp.NewServer(
 				xhttp.SrvOpts().Server(&http.Server{
-					Addr:    "127.0.0.1:8080",
+					Addr:    net.JoinHostPort(listenHost, listenPort),
 					Handler: rt,
 				}),
 				xhttp.SrvOpts().LoggerFactory(reqLogf),

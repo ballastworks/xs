@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	reqLoggerElapsedTimeKey = "http.elapsed_time"
+	reqLoggerElapsedTimeKey = "x.http.elapsed_time"
 )
 
 var (

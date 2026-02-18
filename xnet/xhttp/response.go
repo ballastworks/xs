@@ -380,6 +380,12 @@ func (resp Response) StaticHandler() http.Handler {
 	// wrap handler so that errors are logged
 	if !resp.loggerDisabled && (resp.errResp != nil || statusCodeInErrorRange(sc)) {
 		if rf := resp.factory; rf != nil {
+
+			// At static response construction time the response factory was
+			// well known, so keep this knowledge and log in the fashion
+			// the response factory indicates we should in this context before
+			// the final render is issued to the request originator.
+
 			if logFunc := rf.errRespLoggingFunc; logFunc != nil {
 				next := handler
 				handler = func(w http.ResponseWriter, r *http.Request) {
@@ -392,10 +398,18 @@ func (resp Response) StaticHandler() http.Handler {
 				}
 			}
 		} else {
+
+			// At static response construction time the response factory was
+			// NOT well known, so the handler must resolve this dynamically
+			// each handler invocation so we can log in the fashion the current
+			// default response factory instance indicates we should in before
+			// the final render is issued to the request originator.
+
 			next := handler
 			handler = func(w http.ResponseWriter, r *http.Request) {
+				rf := DefaultResponseFactory()
 
-				if logFunc := DefaultResponseFactory().errRespLoggingFunc; logFunc != nil {
+				if logFunc := rf.errRespLoggingFunc; logFunc != nil {
 
 					ctx := r.Context()
 					logger := rf.Logger(ctx)

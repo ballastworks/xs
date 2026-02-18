@@ -60,6 +60,12 @@ func (s *structLogger) Enabled(ctx context.Context, level slog.Level) bool {
 
 func logRecord(ctx context.Context, handler slog.Handler, record slog.Record) error {
 
+	const (
+		logKeyFilePath = "code.file.path"
+		logKeyFileLine = "code.line.number"
+		logKeyFuncName = "code.function.name"
+	)
+
 	// alloc: 2; 232 bytes
 	var f runtime.Frame
 	{
@@ -70,12 +76,16 @@ func logRecord(ctx context.Context, handler slog.Handler, record slog.Record) er
 	// alloc: 1; 16 bytes from SpanContextFromContext operation
 	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		arrTraceID := [16 * 2]byte{}
+		arrTraceFlags := [1 * 2]byte{}
 		arrSpanID := [8 * 2]byte{}
 
-		var traceID, spanID []byte
+		var traceID, traceFlags, spanID []byte
 		{
 			tid := sc.TraceID()
 			traceID = hex.AppendEncode(arrTraceID[:0], tid[:])
+
+			arrTraceFlags[0] = byte(sc.TraceFlags())
+			traceFlags = hex.AppendEncode(arrTraceFlags[:0], arrTraceFlags[:1])
 
 			sid := sc.SpanID()
 			spanID = hex.AppendEncode(arrSpanID[:0], sid[:])
@@ -83,18 +93,19 @@ func logRecord(ctx context.Context, handler slog.Handler, record slog.Record) er
 
 		// alloc: 2; 48 bytes
 		record.AddAttrs(
-			slog.String("src.file", f.File),
-			slog.String("src.func", f.Function),
-			slog.Int("src.line", f.Line),
+			slog.String(logKeyFilePath, f.File),
+			slog.String(logKeyFuncName, f.Function),
+			slog.Int(logKeyFileLine, f.Line),
 			slog.String("trace_id", string(traceID)),
+			slog.String("trace_flags", string(traceFlags)),
 			slog.String("span_id", string(spanID)),
 		)
 	} else {
 		// zero allocs
 		record.AddAttrs(
-			slog.String("src.file", f.File),
-			slog.String("src.func", f.Function),
-			slog.Int("src.line", f.Line),
+			slog.String(logKeyFilePath, f.File),
+			slog.String(logKeyFuncName, f.Function),
+			slog.Int(logKeyFileLine, f.Line),
 		)
 	}
 
