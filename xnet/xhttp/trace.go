@@ -56,24 +56,44 @@ type traceMediator struct {
 	traceMediatorState
 }
 
+func (tm *traceMediator) checkContext(ctx context.Context) {
+	if ctx != nil {
+		return
+	}
+
+	panic(panicReqNotInFlightMsg)
+}
+
 func (tm *traceMediator) Value(key any) any {
+	ctx := tm.ctx
+	tm.checkContext(ctx)
+
 	if _, ok := key.(traceAdderCtxKey); ok {
 		return tm
 	}
 
-	return tm.ctx.Value(key)
+	return ctx.Value(key)
 }
 
 func (tm *traceMediator) Deadline() (deadline time.Time, ok bool) {
-	return tm.ctx.Deadline()
+	ctx := tm.ctx
+	tm.checkContext(ctx)
+
+	return ctx.Deadline()
 }
 
 func (tm *traceMediator) Done() <-chan struct{} {
-	return tm.ctx.Done()
+	ctx := tm.ctx
+	tm.checkContext(ctx)
+
+	return ctx.Done()
 }
 
 func (tm *traceMediator) Err() error {
-	return tm.ctx.Err()
+	ctx := tm.ctx
+	tm.checkContext(ctx)
+
+	return ctx.Err()
 }
 
 var traceMediatorPool = sync.Pool{

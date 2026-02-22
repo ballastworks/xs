@@ -1,7 +1,6 @@
 package xhttp
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,35 +13,9 @@ import (
 )
 
 func TestRouteNotFoundHandler(t *testing.T) {
-	//
-	// Setup Router
-	//
-
-	rt, err := NewRouter(
-		RouterOpts().LoggerFactory(xslog.NopFactory()),
-		RouterOpts().IgnoreTrailingSlash(true),
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	//
-	// Setup Server
-	//
-
-	srv, err := NewServer(
-		SrvOpts().Server(&http.Server{
-			Addr:    "127.0.0.1:0",
-			Handler: rt,
-		}),
-		SrvOpts().LoggerFactory(xslog.NopFactory()),
-	)
-	if err != nil {
-		panic(err)
-	}
-
 	type TC struct {
 		handler http.Handler
+		req     *http.Request
 	}
 	type R struct {
 		statusCode int
@@ -51,24 +24,52 @@ func TestRouteNotFoundHandler(t *testing.T) {
 		bodyErr    error
 	}
 
-	tc := TC{
-		handler: srv,
-	}
+	tc := func() TC {
+		//
+		// Setup Router
+		//
 
-	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:0/404.json", http.NoBody)
-	if err != nil {
-		panic(err)
-	}
+		rt, err := NewRouter(
+			RouterOpts().LoggerFactory(xslog.NopFactory()),
+			RouterOpts().IgnoreTrailingSlash(true),
+		)
+		if err != nil {
+			panic(err)
+		}
+
+		//
+		// Setup Server
+		//
+
+		srv, err := NewServer(
+			SrvOpts().Server(&http.Server{
+				Addr:    "127.0.0.1:0",
+				Handler: rt,
+			}),
+			SrvOpts().LoggerFactory(xslog.NopFactory()),
+		)
+		if err != nil {
+			panic(err)
+		}
+
+		req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:0/404.json", http.NoBody)
+		if err != nil {
+			panic(err)
+		}
+
+		return TC{
+			handler: srv,
+			req:     req,
+		}
+	}()
 
 	tbdd.WT(tc,
 		// when
 		"route not found handler is invoked",
 		func(t *testing.T, tc TC) R {
 			w := httptest.NewRecorder()
-			r := req.Clone(context.Background())
 
-			tc.handler.ServeHTTP(w, r)
-			w.Flush()
+			tc.handler.ServeHTTP(w, tc.req)
 			resp := w.Result()
 			defer resp.Body.Close()
 

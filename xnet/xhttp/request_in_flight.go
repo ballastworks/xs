@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"sync/atomic"
+	"time"
 )
 
 const panicReqNotInFlightMsg = "behavior sourced from context depending on an active request after request has ended"
@@ -14,6 +15,7 @@ type ctxKeyRequestInFlight struct{}
 // tangible concern that can only be mitigated via additional state information
 // maintained externally and compared to content within this data element.
 type reqInFlight struct {
+	ctx      context.Context
 	inactive atomic.Bool
 }
 
@@ -37,13 +39,33 @@ func (rf *reqInFlight) mustBeActive() {
 	panic(panicReqNotInFlightMsg)
 }
 
+func (rf *reqInFlight) Value(key any) any {
+	if _, ok := key.(ctxKeyRequestInFlight); ok {
+		return rf
+	}
+
+	return rf.ctx.Value(key)
+}
+
+func (rf *reqInFlight) Deadline() (time.Time, bool) {
+	return rf.ctx.Deadline()
+}
+
+func (rf *reqInFlight) Done() <-chan struct{} {
+	return rf.ctx.Done()
+}
+
+func (rf *reqInFlight) Err() error {
+	return rf.ctx.Err()
+}
+
 func middlewareRequestInFlight(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rf := &reqInFlight{}
+		rf := &reqInFlight{
+			ctx: r.Context(),
+		}
 
-		ctx := context.WithValue(r.Context(), ctxKeyRequestInFlight{}, rf)
-		// TODO: can add context behaviors to rf type
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(rf))
 	})
 }
 

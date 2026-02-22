@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/ballastworks/xs/xcontext"
 	"github.com/ballastworks/xs/xerrors"
@@ -57,7 +58,7 @@ var disconnectTrackingContextPool = sync.Pool{
 }
 
 type disconnectTrackingContextState struct {
-	context.Context
+	ctx context.Context
 	err error
 }
 
@@ -66,8 +67,44 @@ type disconnectTrackingContext struct {
 	disconnectTrackingContextState
 }
 
+func (dtc *disconnectTrackingContext) checkContext(ctx context.Context) {
+	if ctx != nil {
+		return
+	}
+
+	panic(panicReqNotInFlightMsg)
+}
+
 func (dtc *disconnectTrackingContext) Connected() bool {
-	return !xcontext.Done(dtc.Context)
+	ctx := dtc.ctx
+	dtc.checkContext(ctx)
+
+	return !xcontext.Done(ctx)
+}
+
+func (dtc *disconnectTrackingContext) Value(key any) any {
+	ctx := dtc.ctx
+	dtc.checkContext(ctx)
+
+	if _, ok := key.(ctxKeyClientDisconnectObserver); ok {
+		return dtc
+	}
+
+	return ctx.Value(key)
+}
+
+func (dtc *disconnectTrackingContext) Deadline() (time.Time, bool) {
+	ctx := dtc.ctx
+	dtc.checkContext(ctx)
+
+	return ctx.Deadline()
+}
+
+func (dtc *disconnectTrackingContext) Done() <-chan struct{} {
+	ctx := dtc.ctx
+	dtc.checkContext(ctx)
+
+	return ctx.Done()
 }
 
 func (dtc *disconnectTrackingContext) Err() error {
@@ -86,7 +123,10 @@ func (dtc *disconnectTrackingContext) Err() error {
 		return err
 	}
 
-	err := xcontext.Cause(dtc.Context)
+	ctx := dtc.ctx
+	dtc.checkContext(ctx)
+
+	err := xcontext.Cause(ctx)
 	if err == nil {
 		return nil
 	}
@@ -161,10 +201,14 @@ func MiddlewareClientDisconnectObserver() func(next http.Handler) http.Handler {
 			defer dtc.release()
 
 			ctx := r.Context()
-			ctx = context.WithValue(ctx, ctxKeyClientDisconnectObserver{}, dtc)
+			dtc.ctx = ctx
 
-			dtc.Context = ctx
-			// TODO: can add context behaviors to dtc type
+			// NOTE: cannot add context behaviors to dtc type because it's too
+			// easy to lead to cryptic crashes due to the inner context being
+			// nil should a capture have occurred causing a child context to
+			// live beyond the lifecycle of a request.
+			//
+			// This might be acceptable given
 			next.ServeHTTP(w, r.WithContext(dtc))
 		})
 	}

@@ -3,7 +3,7 @@ module github.com/ballastworks/xs
 go 1.25.0
 
 require (
-	github.com/josephcopenhaver/tbdd-go v1.2.1
+	github.com/josephcopenhaver/tbdd-go v1.2.2
 	github.com/julienschmidt/httprouter v1.3.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/instrumentation/host v0.64.0

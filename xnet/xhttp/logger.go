@@ -166,6 +166,7 @@ RETURN_LAST_HIT:
 }
 
 type reqDataState struct {
+	ctx   context.Context
 	start time.Time
 	req   *http.Request
 }
@@ -176,7 +177,8 @@ type reqData struct {
 	reqDataState
 }
 
-func (rd *reqData) init() {
+func (rd *reqData) init(ctx context.Context) {
+	rd.ctx = ctx
 	rd.start = time.Now()
 }
 
@@ -264,6 +266,46 @@ func (rd *reqData) resolveWithCachedLogger(ctx context.Context,
 
 RETURN_LOGGER:
 	return logger.WithAttrs(ctx, slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
+}
+
+func (rd *reqData) checkContext(ctx context.Context) {
+	if ctx != nil {
+		return
+	}
+
+	panic(panicReqNotInFlightMsg)
+}
+
+func (rd *reqData) Value(key any) any {
+	ctx := rd.ctx
+	rd.checkContext(ctx)
+
+	if _, ok := key.(reqDataCtxKey); ok {
+		return rd
+	}
+
+	return ctx.Value(key)
+}
+
+func (rd *reqData) Deadline() (time.Time, bool) {
+	ctx := rd.ctx
+	rd.checkContext(ctx)
+
+	return ctx.Deadline()
+}
+
+func (rd *reqData) Done() <-chan struct{} {
+	ctx := rd.ctx
+	rd.checkContext(ctx)
+
+	return ctx.Done()
+}
+
+func (rd *reqData) Err() error {
+	ctx := rd.ctx
+	rd.checkContext(ctx)
+
+	return ctx.Err()
 }
 
 type reqDataCtxKey struct{}
@@ -671,12 +713,11 @@ func MiddlewareLogger() func(http.Handler) http.Handler {
 					reqDataPool.Put(v)
 				}()
 
-				v.init()
+				v.init(r.Context())
 				rd = v
 			}
 
-			ctx := context.WithValue(r.Context(), reqDataCtxKey{}, rd)
-			rd.req = r.WithContext(ctx)
+			rd.req = r.WithContext(rd)
 
 			defer func() {
 				// TODO: detect if a log occurred and if so then log a correlation_log event
@@ -699,7 +740,6 @@ func MiddlewareLogger() func(http.Handler) http.Handler {
 				// }
 			}()
 
-			// TODO: can add context behaviors to rd type
 			next.ServeHTTP(w, rd.req)
 		})
 	}
