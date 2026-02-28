@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -781,17 +782,28 @@ func MiddlewareLogger(options ...MiddlewareLoggerOption) func(http.Handler) http
 					req := rd.req
 					attrs := make([]slog.Attr, 0, 8)
 
-					scheme := "http"
-					if req.TLS != nil {
+					scheme := req.URL.Scheme
+					if scheme == "" {
+						scheme = "http"
+					} else if equalFoldFirstLowerASCII("http", scheme) {
+						if req.TLS != nil {
+							scheme = "https"
+						} else {
+							scheme = "http"
+						}
+					} else if equalFoldFirstLowerASCII("https", scheme) {
 						scheme = "https"
+					} else {
+						// not a valid scheme, so short circuiting and using a
+						// stub
+						scheme = ""
 					}
 
-					// slog.String("network.protocol.name", scheme), // or grpc or amqp - not safe to assume without more strategy
-					// slog.String("url.path", req.URL.Path), // Not safe, should stick with http.route or require explicit opt-in
+					var versionBuf [3]byte
 
 					attrs = append(attrs,
-						slog.String("url.scheme", scheme),
-						slog.String("network.protocol.name", scheme),
+						slog.String("network.protocol.name", "http"),
+						slog.String("network.protocol.version", string(appendHttpProtoVersion(versionBuf[:0], req.ProtoMajor, req.ProtoMinor))),
 						slog.String("url.scheme", scheme),
 						slog.String("http.request.header.host", req.Host),
 					)
@@ -876,4 +888,46 @@ type xhttpLoggerFactory struct {
 
 func (f *xhttpLoggerFactory) Logger(ctx context.Context) xslog.Logger {
 	return f.w
+}
+
+//
+// helpers
+//
+
+// equalFoldFirstLowerASCII should only be used when first argument is
+// guaranteed to be ASCII compliant and lower case. Returns true if the two
+// strings are the same regardless of letter case.
+func equalFoldFirstLowerASCII(s1, s2 string) bool {
+	if len(s1) != len(s2) {
+		return false
+	}
+
+	for i := 0; i < len(s1); i++ {
+		f1 := s1[i]
+
+		c2 := s2[i]
+		f2 := c2 | 0x20
+
+		// detect if in character range and if same continue
+		if f2 >= 'a' && f2 <= 'z' {
+			if f1 != f2 {
+				return false
+			}
+
+			continue
+		}
+
+		// check if the literal byte is the same since it must not be a letter
+		if f1 != c2 {
+			return false
+		}
+	}
+
+	return true
+}
+
+func appendHttpProtoVersion(dst []byte, major, minor int) []byte {
+	dst = strconv.AppendInt(dst, int64(major), 10)
+	dst = append(dst, '.')
+	return strconv.AppendInt(dst, int64(minor), 10)
 }
