@@ -485,16 +485,36 @@ func main() {
 				})
 			}
 
-			// service instance ready to start handling traffic probe handler
+			// Service instance ready to start handling traffic probe handler.
 			//
-			// may sample upstream services to make sure they are healthy before
-			// returning a likely sticky success response
+			// May sample upstream services to make sure they are healthy before
+			// returning a likely sticky success response.
+			//
+			// Ideally during startup critical external dependencies having
+			// issues would be checked and critical internals of this instance
+			// initialized as required for the service to fulfill its critical
+			// core functions. This would occur asynchronously of this handler
+			// or prior to the listener piping to the handler being opened such
+			// that the handler just checks some atomic indicator or status
+			// and returns. Once healthy it should likely remain sticky-healthy
+			// as externals from that point are not related to the readiness of
+			// the service but rather ongoing healthiness.
 			rt.Get("/readyz", alwaysOKHandler)
 
-			// ongoing liveness probe handler
+			// Ongoing liveness probe handler.
 			//
-			// if this ever returns an error it's a strong signal
-			// for the orchestration layers to terminate the instance
+			// If this ever returns an error it's a strong signal for the
+			// orchestration layers to terminate the instance in most cases.
+			//
+			// This endpoint must not return a success status until the
+			// readiness probe has passed and is sticky-healthy. This endpoint
+			// must not convey failure of any upstream dependencies in any
+			// fashion unless the natures of those failures are guaranteed to
+			// be resolved by a termination of the container instance without
+			// exception. Ignoring this advice will lead to cascading failures
+			// when the orchestration layers treat a non-success or loss of
+			// signal as an indicator to terminate the container instance and
+			// replace it with another possibly on another host.
 			rt.Get("/healthz", alwaysOKHandler)
 
 			//
