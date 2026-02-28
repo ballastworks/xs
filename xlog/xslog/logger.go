@@ -171,6 +171,9 @@ type Logger interface {
 	WithErr(ctx context.Context, err error) Logger
 	WithAttrs(ctx context.Context, attrs ...slog.Attr) Logger
 	SlogHandler(ctx context.Context) slog.Handler
+
+	// Handle emits a given log record if the level of the record is enabled
+	// for a given context.
 	Handle(ctx context.Context, record slog.Record) error
 
 	// SpanErr is the same as Error except it also records that an error happened

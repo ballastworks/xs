@@ -220,8 +220,13 @@ func (s *structLoggerWriteTracked) WithErr(_ context.Context, err error) Logger 
 // - slogStructLogger (wraps *structLogger or *structLoggerWriteTracked)
 
 type simpleHandler interface {
+	// Enabled returns true if the logger would emit a log for the supplied
+	// level.
 	Enabled(ctx context.Context, level slog.Level) bool
-	Handle(context.Context, slog.Record) error
+
+	// Handle emits a given log record if the level of the record is enabled
+	// for a given context.
+	Handle(ctx context.Context, record slog.Record) error
 }
 
 // RecordWritten takes a logger handler and returns true if the handler emitted
@@ -262,5 +267,3 @@ func RecordWritten(h simpleHandler) bool {
 
 	return vt.recordWritten()
 }
-
-// var _ Logger = &structLoggerWriteTracked{w: nil} // TODO: remove
