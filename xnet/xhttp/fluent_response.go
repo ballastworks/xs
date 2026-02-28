@@ -29,6 +29,25 @@ func (fr *FluentResponse) LoggerFactory(logf xslog.LoggerFactory) *FluentRespons
 	return fr
 }
 
+// StatusCode should be used to convey standard non-error responses and not to
+// construct error messages or messages in general with error status codes. To
+// construct error messages instead see NewErrResp and NewInternalErrResp.
+//
+// This function panics if the status code value is less than zero.
+//
+// If unspecified the response status code will be 200.
+//
+// Note that standard IANA range is really [100, 599] inclusive and behavior of
+// clients when they receive values outside this range can be undefined.
+func (fr *FluentResponse) StatusCode(v int) *FluentResponse {
+	if v <= 0 {
+		panic("invalid status code: must be > 0")
+	}
+
+	fr.statusCode = v
+	return fr
+}
+
 func (fr *FluentResponse) JsonBody(v any) *FluentResponse {
 	fr.responseBodyType = responseBodyJson
 	fr.body = v

@@ -402,6 +402,7 @@ func main() {
 				v, err := xhttp.NewRequestLoggerFactory(
 					op.LoggerFactory(logf),
 					op.CacheLogger(true),
+					op.TrackWrites(true), // TrackWrites is required for the correlation logger
 					// op.RecordPotentialGatewayPII(true),
 				)
 				if err != nil {
@@ -500,12 +501,15 @@ func main() {
 			// Setup Server
 			//
 
+			srvOp := xhttp.SrvOpts()
 			srv, err = xhttp.NewServer(
-				xhttp.SrvOpts().Server(&http.Server{
+				srvOp.Server(&http.Server{
 					Addr:    net.JoinHostPort(listenHost, listenPort),
 					Handler: rt,
 				}),
-				xhttp.SrvOpts().LoggerFactory(reqLogf),
+				srvOp.LoggerFactory(reqLogf),
+				// Enables correlation logger and more
+				srvOp.TraceMiddlewares(xhttp.EnrichedTraceMiddlewareChain()...),
 			)
 			if err != nil {
 				panic(err)

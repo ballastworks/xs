@@ -2,6 +2,7 @@ package xhttp
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync/atomic"
@@ -22,7 +23,70 @@ func (defaultLoggerFactoryFoundationProxy) Logger(ctx context.Context) xslog.Log
 	return xslog.DefaultFactory().Logger(ctx)
 }
 
+type defaultWriteTrackingLoggerFactoryFoundationProxy struct {
+	defaultLoggerFactoryFoundationProxy
+}
+
+func checkDefaultWriteTrackingLoggerFactoryFoundationProxyError(err error) {
+	if err == nil {
+		return
+	}
+
+	panic(fmt.Errorf("should be unreachable: error from defaultTrackedLoggerFactoryFoundationProxy: %w", err))
+}
+
+func (defaultWriteTrackingLoggerFactoryFoundationProxy) Logger(ctx context.Context) xslog.Logger {
+	logger := xslog.DefaultFactory().Logger(ctx)
+
+	op := xslog.LoggerOpts()
+
+	// TODO: remove the need to convert to a slog.Handler
+	sh := logger.SlogHandler(ctx)
+
+	logger, err := xslog.New(
+		op.Handler(sh),
+		op.TrackWrites(true),
+	)
+	checkDefaultWriteTrackingLoggerFactoryFoundationProxyError(err)
+
+	return logger
+}
+
+func checkTrackingLoggerFactoryWrapperCallLoggerError(err error) {
+	if err == nil {
+		return
+	}
+
+	panic(fmt.Errorf("should be unreachable: error from writeTrackingLoggerFactoryWrapper.Logger: %w", err))
+}
+
+type trackingLoggerFactoryWrapper struct {
+	xslog.LoggerFactory
+}
+
+func (w *trackingLoggerFactoryWrapper) Logger(ctx context.Context) xslog.Logger {
+	logger := w.LoggerFactory.Logger(ctx)
+
+	op := xslog.LoggerOpts()
+
+	// TODO: remove the need to convert to a slog.Handler
+	sh := logger.SlogHandler(ctx)
+
+	logger, err := xslog.New(
+		op.Handler(sh),
+		op.TrackWrites(true),
+	)
+	checkTrackingLoggerFactoryWrapperCallLoggerError(err)
+
+	return logger
+}
+
+func newWriteTrackingLoggerFactoryWrapper(logf xslog.LoggerFactory) xslog.LoggerFactory {
+	return &trackingLoggerFactoryWrapper{logf}
+}
+
 var defaultLoggerFactoryFoundation = &defaultLoggerFactoryFoundationProxy{}
+var defaultWriteTrackingLoggerFactoryFoundation = &defaultWriteTrackingLoggerFactoryFoundationProxy{}
 
 type boxedLoggerFactory struct {
 	v xslog.LoggerFactory

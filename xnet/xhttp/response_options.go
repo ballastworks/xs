@@ -112,3 +112,19 @@ func (respOpts) AddHeaders(k string, values ...string) RespOption {
 		cfg.header[k] = append(cfg.header[k], values...)
 	}
 }
+
+// StatusCode should be used to convey standard non-error responses and not to
+// construct error messages or messages in general with error status codes. To
+// construct error messages instead see NewErrResp and NewInternalErrResp.
+//
+// This function panics if the status code value is less than zero.
+//
+// If unspecified the response status code will be 200.
+//
+// Note that standard IANA range is really [100, 599] inclusive and behavior of
+// clients when they receive values outside this range can be undefined.
+func (respOpts) StatusCode(v int) RespOption {
+	return func(cfg *respConfig) {
+		cfg.statusCode = v
+	}
+}

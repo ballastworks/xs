@@ -18,6 +18,7 @@ import (
 
 const (
 	errMsgShutdownDeadlineExceeded = "graceful shutdown deadline exceeded"
+	defaultHttpSpanOperation       = "http.request"
 )
 
 var (
@@ -63,9 +64,38 @@ type Server struct {
 	disableKeepAlivesOnShutdown bool
 }
 
-func DefaultTraceMiddlewareChain(spanOperation string) MiddlewareChain {
-	if spanOperation == "" {
-		spanOperation = "http.request"
+type defaultTraceMiddlewareChainConfig struct {
+	spanOperation           string
+	middlewareLoggerOptions []MiddlewareLoggerOption
+}
+
+type DefaultTraceMiddlewareChainOption func(*defaultTraceMiddlewareChainConfig)
+
+func DefaultTraceMiddlewareChainOpts() DefaultTraceMiddlewareChainOptions {
+	return DefaultTraceMiddlewareChainOptions{}
+}
+
+type DefaultTraceMiddlewareChainOptions struct{}
+
+func (DefaultTraceMiddlewareChainOptions) MiddlewareLoggerOptions(v ...MiddlewareLoggerOption) DefaultTraceMiddlewareChainOption {
+	return func(cfg *defaultTraceMiddlewareChainConfig) {
+		cfg.middlewareLoggerOptions = v
+	}
+}
+
+func (DefaultTraceMiddlewareChainOptions) SpanOperation(v string) DefaultTraceMiddlewareChainOption {
+	return func(cfg *defaultTraceMiddlewareChainConfig) {
+		cfg.spanOperation = v
+	}
+}
+
+func DefaultTraceMiddlewareChain(options ...DefaultTraceMiddlewareChainOption) MiddlewareChain {
+	cfg := defaultTraceMiddlewareChainConfig{
+		// empty
+	}
+
+	for _, f := range options {
+		f(&cfg)
 	}
 
 	var trace Middleware
@@ -81,13 +111,26 @@ func DefaultTraceMiddlewareChain(spanOperation string) MiddlewareChain {
 		trace = v
 	}
 
+	spanOperation := cfg.spanOperation
+	if spanOperation == "" {
+		spanOperation = defaultHttpSpanOperation
+	}
+
 	return UnsafeSliceToMiddlewareChain(
 		MiddlewareRequestInFlightBegin(),
-		MiddlewareLogger(),
+		MiddlewareLogger(cfg.middlewareLoggerOptions...),
 		trace,
 		func(next http.Handler) http.Handler {
 			return otelhttp.NewHandler(next, spanOperation)
 		},
+	)
+}
+
+func EnrichedTraceMiddlewareChain() MiddlewareChain {
+	return DefaultTraceMiddlewareChain(
+		DefaultTraceMiddlewareChainOpts().MiddlewareLoggerOptions(
+			MiddlewareLoggerOpts().EmitRequestCorrelationLogs(true),
+		),
 	)
 }
 

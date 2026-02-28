@@ -215,38 +215,45 @@ func (s *structLoggerWriteTracked) WithErr(_ context.Context, err error) Logger 
 	return s.withAttrs(errAttrs(err)...)
 }
 
-// TODO: implement RecordWritten
-
 // slog.Handler types:
 // - *structLoggerGrouped (wraps a *structLoggerGrouped or a slogStructLogger)
 // - slogStructLogger (wraps *structLogger or *structLoggerWriteTracked)
 
-// func RecordWritten(h slog.Handler) bool {
-// 	type recordWriteTracker interface{ recordWritten() bool }
+type simpleHandler interface {
+	Enabled(ctx context.Context, level slog.Level) bool
+	Handle(context.Context, slog.Record) error
+}
 
-// 	var vt recordWriteTracker
-// 	for {
+func RecordWritten(h simpleHandler) bool {
+	type recordWriteTracker interface{ recordWritten() bool }
 
-// 		if v, ok := h.(recordWriteTracker); ok {
-// 			vt = v
-// 		}
+	var vt recordWriteTracker
+	for {
 
-// 		switch vt := h.(type) {
-// 		case interface{ Handler() slog.Handler }:
-// 			h = vt.Handler()
-// 			continue
-// 		case *structLoggerGrouped:
-// 			h = vt.handler
-// 			continue
-// 		}
+		if v, ok := h.(recordWriteTracker); ok {
+			vt = v
+		}
 
-// 		break
-// 	}
-// 	if vt == nil {
-// 		return false
-// 	}
+		switch v := h.(type) {
+		case interface{ Handler() slog.Handler }:
+			h = v.Handler()
+			continue
+		case *structLoggerGrouped:
+			h = v.handler
+			continue
+		case slogStructLogger:
+			if v, ok := v.w.(recordWriteTracker); ok {
+				vt = v
+			}
+		}
 
-// 	return vt.recordWritten()
-// }
+		break
+	}
+	if vt == nil {
+		return false
+	}
+
+	return vt.recordWritten()
+}
 
 // var _ Logger = &structLoggerWriteTracked{w: nil} // TODO: remove

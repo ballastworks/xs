@@ -69,7 +69,7 @@ func (cfg *srvConfig) validate() error {
 	}
 
 	if !cfg.traceMiddlewaresSet {
-		cfg.traceMiddlewares = DefaultTraceMiddlewareChain("")
+		cfg.traceMiddlewares = DefaultTraceMiddlewareChain()
 	}
 
 	return nil

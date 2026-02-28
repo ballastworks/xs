@@ -311,9 +311,11 @@ func (rd *reqData) Err() error {
 type reqDataCtxKey struct{}
 
 type requestLoggerFactoryConfig struct {
-	logf        xslog.LoggerFactory
-	logfSet     bool
-	cacheLogger bool
+	logf           xslog.LoggerFactory
+	logfSet        bool
+	cacheLogger    bool
+	trackWrites    bool
+	cacheLoggerSet bool
 }
 type RequestLoggerFactoryOption func(*requestLoggerFactoryConfig)
 type requestLoggerFactoryOpts struct{}
@@ -332,6 +334,16 @@ func (requestLoggerFactoryOpts) LoggerFactory(factory xslog.LoggerFactory) Reque
 func (requestLoggerFactoryOpts) CacheLogger(b bool) RequestLoggerFactoryOption {
 	return func(cfg *requestLoggerFactoryConfig) {
 		cfg.cacheLogger = b
+		cfg.cacheLoggerSet = true
+	}
+}
+
+// TrackWrites automatically enables logger caching that CacheLogger(true)
+// would and this option must be true for the MiddlewareLogger option
+// EmitRequestCorrelationLogs(true) to work as intended.
+func (requestLoggerFactoryOpts) TrackWrites(b bool) RequestLoggerFactoryOption {
+	return func(cfg *requestLoggerFactoryConfig) {
+		cfg.trackWrites = b
 	}
 }
 
@@ -352,11 +364,31 @@ func (requestLoggerFactoryOpts) CacheLogger(b bool) RequestLoggerFactoryOption {
 // }
 
 func (cfg *requestLoggerFactoryConfig) validate() error {
+	if cfg.trackWrites && !cfg.cacheLogger {
+		if cfg.cacheLoggerSet {
+			return errors.New("cannot track writes with logger caching disabled")
+		}
+
+		// enabling the caching of logger instances made during a request cycle
+		// to empower EmitRequestCorrelationLogs(true) when set on the
+		// MiddlewareLogger
+		cfg.cacheLogger = true
+	}
+
+	var logfNotSet bool
 	if cfg.logf == nil {
 		if cfg.logfSet {
 			return errors.New("nil logger factory specified")
 		}
 
+		logfNotSet = true
+	}
+
+	if !logfNotSet {
+		cfg.logf = newWriteTrackingLoggerFactoryWrapper(cfg.logf)
+	} else if cfg.trackWrites {
+		cfg.logf = defaultWriteTrackingLoggerFactoryFoundation
+	} else {
 		cfg.logf = defaultLoggerFactoryFoundation
 	}
 
@@ -420,17 +452,17 @@ type perLogClientMeta struct {
 	vcsRepository string
 }
 
-// type reqEndLogClientMeta struct {
-// 	version     string
-// 	instanceID  string
-// 	vcsRevision string
-// }
+type reqEndLogClientMeta struct {
+	version     string
+	instanceID  string
+	vcsRevision string
+}
 
 var (
 	cmVcsRe = regexp.MustCompile(`(?:^|;)\s*vcs\s*=\s*[^;]*\s*(?:;|$)`)
-	// cmRevRe = regexp.MustCompile(`(?:^|;)\s*rev\s*=\s*[^;]*\s*(?:;|$)`)
-	cmNsRe = regexp.MustCompile(`(?:^|;)\s*ns\s*=\s*[^;]*\s*(?:;|$)`)
-	// cmIdRe  = regexp.MustCompile(`(?:^|;)\s*id\s*=\s*[^;]*\s*(?:;|$)`)
+	cmRevRe = regexp.MustCompile(`(?:^|;)\s*rev\s*=\s*[^;]*\s*(?:;|$)`)
+	cmNsRe  = regexp.MustCompile(`(?:^|;)\s*ns\s*=\s*[^;]*\s*(?:;|$)`)
+	cmIdRe  = regexp.MustCompile(`(?:^|;)\s*id\s*=\s*[^;]*\s*(?:;|$)`)
 )
 
 func extractClientMetaVal(r *regexp.Regexp, s string) string {
@@ -480,56 +512,55 @@ func getPerLogClientMeta(header http.Header) (perLogClientMeta, bool) {
 	return result, true
 }
 
-// TODO: uncomment and utilize
-// func getReqEndLogClientMeta(header http.Header) (reqEndLogClientMeta, bool) {
-// 	var result, nv reqEndLogClientMeta
+func getReqEndLogClientMeta(header http.Header) (reqEndLogClientMeta, bool) {
+	var result, nv reqEndLogClientMeta
 
-// 	if vv := header["User-Agent"]; len(vv) > 0 {
-// 		v := strings.TrimSpace(vv[0])
-// 		if i := strings.IndexAny(v, "(;"); i != -1 {
-// 			v = v[:i]
-// 		}
+	if vv := header["User-Agent"]; len(vv) > 0 {
+		v := strings.TrimSpace(vv[0])
+		if i := strings.IndexAny(v, "(;"); i != -1 {
+			v = v[:i]
+		}
 
-// 		svc, v, ok := strings.Cut(strings.TrimSpace(v), "/")
-// 		if strings.TrimSpace(svc) == "" {
-// 			// no service name, so short circuiting
-// 			return result, false
-// 		}
+		svc, v, ok := strings.Cut(strings.TrimSpace(v), "/")
+		if strings.TrimSpace(svc) == "" {
+			// no service name, so short circuiting
+			return result, false
+		}
 
-// 		if ok {
-// 			nv.version = strings.TrimSpace(v)
-// 		}
-// 	} else {
-// 		// no service name, so short circuiting
-// 		return result, false
-// 	}
+		if ok {
+			nv.version = strings.TrimSpace(v)
+		}
+	} else {
+		// no service name, so short circuiting
+		return result, false
+	}
 
-// 	if vv := header["X-Client-Build"]; len(vv) > 0 {
-// 		if v := strings.TrimSpace(vv[0]); v != "" {
-// 			if vcsRepo := extractClientMetaVal(cmVcsRe, v); strings.TrimSpace(vcsRepo) == "" {
-// 				// no repository information, so short circuiting
-// 				return result, false
-// 			}
+	if vv := header["X-Client-Build"]; len(vv) > 0 {
+		if v := strings.TrimSpace(vv[0]); v != "" {
+			if vcsRepo := extractClientMetaVal(cmVcsRe, v); strings.TrimSpace(vcsRepo) == "" {
+				// no repository information, so short circuiting
+				return result, false
+			}
 
-// 			nv.vcsRevision = extractClientMetaVal(cmRevRe, v)
-// 		} else {
-// 			// no repository information, so short circuiting
-// 			return result, false
-// 		}
-// 	} else {
-// 		// no repository information, so short circuiting
-// 		return result, false
-// 	}
+			nv.vcsRevision = extractClientMetaVal(cmRevRe, v)
+		} else {
+			// no repository information, so short circuiting
+			return result, false
+		}
+	} else {
+		// no repository information, so short circuiting
+		return result, false
+	}
 
-// 	if vv := header["X-Client-Identity"]; len(vv) > 0 {
-// 		if v := strings.TrimSpace(vv[0]); v != "" {
-// 			nv.instanceID = extractClientMetaVal(cmIdRe, v)
-// 		}
-// 	}
+	if vv := header["X-Client-Identity"]; len(vv) > 0 {
+		if v := strings.TrimSpace(vv[0]); v != "" {
+			nv.instanceID = extractClientMetaVal(cmIdRe, v)
+		}
+	}
 
-// 	result = nv
-// 	return result, true
-// }
+	result = nv
+	return result, true
+}
 
 func baseAttrs() attrsResolverPlan {
 	// TODO: add these values to parent request span as well
@@ -562,25 +593,6 @@ func baseAttrs() attrsResolverPlan {
 				// KNOW YOUR CLIENT:
 
 				if cm, ok := getPerLogClientMeta(req.Header); ok {
-					// TODO: move these to a correlation_log event
-
-					// if cm.version != "" {
-					// 	*attrs = append(*attrs,
-					// 		slog.String("service.version", cm.version),
-					// 	)
-					// }
-
-					// if cm.instanceID != "" {
-					// 	*attrs = append(*attrs,
-					// 		slog.String("service.instance.id", cm.instanceID),
-					// 	)
-					// }
-
-					// if cm.vcsRevision != "" {
-					// 	*attrs = append(*attrs,
-					// 		slog.String("x.service.vcs.revision", cm.vcsRevision),
-					// 	)
-					// }
 
 					*attrs = append(*attrs,
 						slog.String("service.name", cm.service),
@@ -701,7 +713,37 @@ var reqDataPool = sync.Pool{
 	},
 }
 
-func MiddlewareLogger() func(http.Handler) http.Handler {
+type middlewareLoggerConfig struct {
+	emitRCLogs bool
+}
+
+type MiddlewareLoggerOption func(*middlewareLoggerConfig)
+
+type MiddlewareLoggerOptions struct{}
+
+func MiddlewareLoggerOpts() MiddlewareLoggerOptions {
+	return MiddlewareLoggerOptions{}
+}
+
+// EmitRequestCorrelationLogs when set to true with a RequestLoggerFactory
+// that has TrackWrites enabled causes a "correlation log" event to be written
+// to the logger when any prior event is log event is written in a request
+// lifecycle.
+func (MiddlewareLoggerOptions) EmitRequestCorrelationLogs(b bool) MiddlewareLoggerOption {
+	return func(cfg *middlewareLoggerConfig) {
+		cfg.emitRCLogs = b
+	}
+}
+
+func MiddlewareLogger(options ...MiddlewareLoggerOption) func(http.Handler) http.Handler {
+	cfg := middlewareLoggerConfig{
+		// empty
+	}
+
+	for _, f := range options {
+		f(&cfg)
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
@@ -719,26 +761,72 @@ func MiddlewareLogger() func(http.Handler) http.Handler {
 
 			rd.req = r.WithContext(rd)
 
-			defer func() {
-				// TODO: detect if a log occurred and if so then log a correlation_log event
+			if cfg.emitRCLogs {
+				defer func() {
+					var logger xslog.Logger
+					if cs := rd.state.Load().(reqLogCacheState); cs.logger == nil {
+						return
+					} else {
+						logger = cs.logger
+					}
 
-				// scheme := "http"
-				// if req.TLS != nil {
-				// 	scheme = "https"
-				// }
+					{
+						// TODO: remove the need to convert to a slog.Handler
+						sh := logger.SlogHandler(context.TODO())
+						if !xslog.RecordWritten(sh) {
+							return
+						}
+					}
 
-				//
+					req := rd.req
+					attrs := make([]slog.Attr, 0, 8)
 
-				// slog.String("http.flavor", req.Proto)
-				// slog.String("url.scheme", scheme),
-				// slog.String("http.request.header.host", req.Host),
-				// slog.String("url.path", req.URL.Path),
-				// if vv := req.Header["User-Agent"]; len(vv) > 0 {
-				// 	if s := strings.TrimSpace(vv[0]); s != "" {
-				// 		slog.String("user_agent.original", s)
-				// 	}
-				// }
-			}()
+					scheme := "http"
+					if req.TLS != nil {
+						scheme = "https"
+					}
+
+					// slog.String("network.protocol.name", scheme), // or grpc or amqp - not safe to assume without more strategy
+					// slog.String("url.path", req.URL.Path), // Not safe, should stick with http.route or require explicit opt-in
+
+					attrs = append(attrs,
+						slog.String("url.scheme", scheme),
+						slog.String("network.protocol.name", scheme),
+						slog.String("url.scheme", scheme),
+						slog.String("http.request.header.host", req.Host),
+					)
+
+					if vv := req.Header["User-Agent"]; len(vv) > 0 {
+						if s := strings.TrimSpace(vv[0]); s != "" {
+							attrs = append(attrs,
+								slog.String("user_agent.original", s),
+							)
+						}
+					}
+
+					if cm, ok := getReqEndLogClientMeta(req.Header); ok {
+						if cm.version != "" {
+							attrs = append(attrs,
+								slog.String("service.version", cm.version),
+							)
+						}
+
+						if cm.instanceID != "" {
+							attrs = append(attrs,
+								slog.String("service.instance.id", cm.instanceID),
+							)
+						}
+
+						if cm.vcsRevision != "" {
+							attrs = append(attrs,
+								slog.String("x.service.vcs.revision", cm.vcsRevision),
+							)
+						}
+					}
+
+					logger.Info(rd, "request correlation", attrs...)
+				}()
+			}
 
 			next.ServeHTTP(w, rd.req)
 		})
