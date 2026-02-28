@@ -88,9 +88,8 @@ func (loggerOpts) Stream(w io.Writer) LoggerOption {
 }
 
 // TrackWrites should not be called under most circumstances by functions
-// outside xs. This function causes Logger instances to keep track of records
-// written to the handler and facilitate emitting logs only when a handler has
-// itself emitted a log previously.
+// outside xs. This function causes Logger instances to track if a record was
+// written to the handler and facilitates EmitRequestCorrelationLogs behaviors.
 func (loggerOpts) TrackWrites(b bool) LoggerOption {
 	return func(cfg *loggerConfig) {
 		cfg.trackWrites = b

@@ -224,6 +224,13 @@ type simpleHandler interface {
 	Handle(context.Context, slog.Record) error
 }
 
+// RecordWritten takes a logger handler and returns true if the handler emitted
+// a log record. It will only return true if the logger was initialized with
+// TrackWrites(true) or created from a request logger factory initialized with
+// TrackWrites(true).
+//
+// When the MiddlewareLogger option EmitRequestCorrelationLogs(true) is set,
+// then the middleware will call this function.
 func RecordWritten(h simpleHandler) bool {
 	type recordWriteTracker interface{ recordWritten() bool }
 

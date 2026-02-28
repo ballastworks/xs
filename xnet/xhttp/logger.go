@@ -727,9 +727,9 @@ func MiddlewareLoggerOpts() MiddlewareLoggerOptions {
 }
 
 // EmitRequestCorrelationLogs when set to true with a RequestLoggerFactory
-// that has TrackWrites enabled causes a "correlation log" event to be written
-// to the logger when any prior event is log event is written in a request
-// lifecycle.
+// that has TrackWrites enabled causes a "request correlation" log event to be
+// emitted by the logger handler at the end of the request lifecycle if and
+// only if another log was previously written in the same request.
 func (MiddlewareLoggerOptions) EmitRequestCorrelationLogs(b bool) MiddlewareLoggerOption {
 	return func(cfg *middlewareLoggerConfig) {
 		cfg.emitRCLogs = b
@@ -782,17 +782,18 @@ func MiddlewareLogger(options ...MiddlewareLoggerOption) func(http.Handler) http
 					req := rd.req
 					attrs := make([]slog.Attr, 0, 8)
 
+					const httpSchemeLower = "http"
+					const httpsSchemeLower = "https"
+
 					scheme := req.URL.Scheme
-					if scheme == "" {
-						scheme = "http"
-					} else if equalFoldFirstLowerASCII("http", scheme) {
+					if scheme == "" || equalFoldFirstLowerASCII(httpSchemeLower, scheme) {
 						if req.TLS != nil {
-							scheme = "https"
+							scheme = httpsSchemeLower
 						} else {
-							scheme = "http"
+							scheme = httpSchemeLower
 						}
-					} else if equalFoldFirstLowerASCII("https", scheme) {
-						scheme = "https"
+					} else if equalFoldFirstLowerASCII(httpsSchemeLower, scheme) {
+						scheme = httpsSchemeLower
 					} else {
 						// not a valid scheme, so short circuiting and using a
 						// stub
