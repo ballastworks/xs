@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ballastworks/xs/xcontext"
@@ -51,60 +52,38 @@ func (e errClientDisconnected) Error() string {
 
 type ctxKeyClientDisconnectObserver struct{}
 
-var disconnectTrackingContextPool = sync.Pool{
-	New: func() any {
-		return &disconnectTrackingContext{}
-	},
-}
-
-type disconnectTrackingContextState struct {
-	ctx context.Context
-	err error
-}
-
 type disconnectTrackingContext struct {
-	rwm sync.RWMutex
-	disconnectTrackingContextState
-}
-
-func (dtc *disconnectTrackingContext) checkContext(ctx context.Context) {
-	if ctx != nil {
-		return
-	}
-
-	panic(panicReqNotInFlightMsg)
+	rwm      sync.RWMutex
+	ctx      context.Context
+	err      error
+	released atomic.Bool
 }
 
 func (dtc *disconnectTrackingContext) Connected() bool {
-	ctx := dtc.ctx
-	dtc.checkContext(ctx)
+	if dtc.released.Load() {
+		return false
+	}
 
-	return !xcontext.Done(ctx)
+	return !xcontext.Done(dtc.ctx)
 }
 
 func (dtc *disconnectTrackingContext) Value(key any) any {
-	ctx := dtc.ctx
-	dtc.checkContext(ctx)
-
 	if _, ok := key.(ctxKeyClientDisconnectObserver); ok {
+		if dtc.released.Load() {
+			return nil
+		}
 		return dtc
 	}
 
-	return ctx.Value(key)
+	return dtc.ctx.Value(key)
 }
 
 func (dtc *disconnectTrackingContext) Deadline() (time.Time, bool) {
-	ctx := dtc.ctx
-	dtc.checkContext(ctx)
-
-	return ctx.Deadline()
+	return dtc.ctx.Deadline()
 }
 
 func (dtc *disconnectTrackingContext) Done() <-chan struct{} {
-	ctx := dtc.ctx
-	dtc.checkContext(ctx)
-
-	return ctx.Done()
+	return dtc.ctx.Done()
 }
 
 func (dtc *disconnectTrackingContext) Err() error {
@@ -123,10 +102,7 @@ func (dtc *disconnectTrackingContext) Err() error {
 		return err
 	}
 
-	ctx := dtc.ctx
-	dtc.checkContext(ctx)
-
-	err := xcontext.Cause(ctx)
+	err := xcontext.Cause(dtc.ctx)
 	if err == nil {
 		return nil
 	}
@@ -189,15 +165,14 @@ func (dtc *disconnectTrackingContext) release() {
 		}
 	}()
 
-	dtc.disconnectTrackingContextState = disconnectTrackingContextState{}
-	disconnectTrackingContextPool.Put(dtc)
+	dtc.released.Store(true)
 }
 
 func MiddlewareClientDisconnectObserver() func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-			dtc := disconnectTrackingContextPool.Get().(*disconnectTrackingContext)
+			dtc := &disconnectTrackingContext{}
 			defer dtc.release()
 
 			ctx := r.Context()

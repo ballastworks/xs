@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ballastworks/xs/xsync/xrwm"
@@ -42,100 +43,46 @@ type requestTraceAdder interface {
 	AddTraceToHttpRequest(*http.Request) *http.Request
 }
 
-type traceMediatorState struct {
+// traceMediator is a concurrency-safe implementation of a RequestTraceAdder
+type traceMediator struct {
+	rwm         sync.RWMutex
 	ctx         context.Context
 	h           http.Header
 	traceHeader http.Header
 	computed    bool
 	keysFunc    func() []string
-}
-
-// traceMediator is a concurrency-safe implementation of a RequestTraceAdder
-type traceMediator struct {
-	rwm sync.RWMutex
-	traceMediatorState
-}
-
-func (tm *traceMediator) checkContext(ctx context.Context) {
-	if ctx != nil {
-		return
-	}
-
-	panic(panicReqNotInFlightMsg)
+	released    atomic.Bool
 }
 
 func (tm *traceMediator) Value(key any) any {
-	ctx := tm.ctx
-	tm.checkContext(ctx)
-
 	if _, ok := key.(traceAdderCtxKey); ok {
+		if tm.released.Load() {
+			return nil
+		}
 		return tm
 	}
 
-	return ctx.Value(key)
+	return tm.ctx.Value(key)
 }
 
 func (tm *traceMediator) Deadline() (deadline time.Time, ok bool) {
-	ctx := tm.ctx
-	tm.checkContext(ctx)
-
-	return ctx.Deadline()
+	return tm.ctx.Deadline()
 }
 
 func (tm *traceMediator) Done() <-chan struct{} {
-	ctx := tm.ctx
-	tm.checkContext(ctx)
-
-	return ctx.Done()
+	return tm.ctx.Done()
 }
 
 func (tm *traceMediator) Err() error {
-	ctx := tm.ctx
-	tm.checkContext(ctx)
-
-	return ctx.Err()
-}
-
-var traceMediatorPool = sync.Pool{
-	New: func() any {
-		return &traceMediator{}
-	},
-}
-
-func newTraceMediatorFromPool(ctx context.Context, h http.Header, keysFunc func() []string) *traceMediator {
-	tm := traceMediatorPool.Get().(*traceMediator)
-	tm.init(ctx, h, keysFunc)
-
-	return tm
+	return tm.ctx.Err()
 }
 
 func newTraceMediator(ctx context.Context, h http.Header, keysFunc func() []string) *traceMediator {
-	tm := &traceMediator{}
-	tm.init(ctx, h, keysFunc)
-	return tm
-}
-
-func poolTraceMediator(tm *traceMediator) {
-	if tm != nil {
-		tm.dispose()
-		traceMediatorPool.Put(tm)
-	}
-}
-
-func (tm *traceMediator) init(ctx context.Context, h http.Header, keysFunc func() []string) {
-	tm.traceMediatorState = traceMediatorState{
+	return &traceMediator{
 		ctx:      ctx,
 		h:        h,
 		keysFunc: keysFunc,
 	}
-}
-
-func (tm *traceMediator) HTTPMiddlewareReleasesTraceAdderToPool() bool {
-	return true
-}
-
-func (tm *traceMediator) dispose() {
-	tm.traceMediatorState = traceMediatorState{}
 }
 
 func (tm *traceMediator) header() http.Header {
@@ -205,18 +152,13 @@ func (tm *traceMediator) AddTraceToHttpRequest(req *http.Request) *http.Request 
 	return req
 }
 
-type noPoolTraceMediator struct {
-	*traceMediator
-}
-
-func (tm noPoolTraceMediator) HTTPMiddlewareReleasesTraceAdderToPool() bool {
-	return false
+func (tm *traceMediator) release() {
+	tm.released.Store(true)
 }
 
 type traceMiddlewareConfig struct {
 	keysFunc              func() []string
 	keysFuncNotNormalized bool
-	usePool               bool
 }
 
 type TraceMiddlewareOption func(*traceMiddlewareConfig)
@@ -240,12 +182,6 @@ func (traceMiddlewareOpts) KeysFunc(f func() []string) TraceMiddlewareOption {
 	return func(cfg *traceMiddlewareConfig) {
 		cfg.keysFunc = f
 		cfg.keysFuncNotNormalized = true
-	}
-}
-
-func (traceMiddlewareOpts) UsePool(b bool) TraceMiddlewareOption {
-	return func(cfg *traceMiddlewareConfig) {
-		cfg.usePool = b
 	}
 }
 
@@ -289,20 +225,11 @@ func NewTraceMiddleware(options ...TraceMiddlewareOption) (func(http.Handler) ht
 		return nil, err
 	}
 
-	if cfg.usePool {
-		return func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				tm := newTraceMediatorFromPool(r.Context(), r.Header, cfg.keysFunc)
-				defer poolTraceMediator(tm)
-
-				next.ServeHTTP(w, r.WithContext(tm))
-			})
-		}, nil
-	}
-
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tm := newTraceMediator(r.Context(), r.Header, cfg.keysFunc)
+			defer tm.release()
+
 			next.ServeHTTP(w, r.WithContext(tm))
 		})
 	}, nil
@@ -310,30 +237,7 @@ func NewTraceMiddleware(options ...TraceMiddlewareOption) (func(http.Handler) ht
 
 func traceAdderFromContext(ctx context.Context) requestTraceAdder {
 	if v, ok := ctx.Value(traceAdderCtxKey{}).(requestTraceAdder); ok {
-		//
-		// note that it is impossible right now (2025-12-29) for a RequestTraceAdder
-		// in the context for the key traceAdderCtxKey{} to never implement
-		// `HTTPMiddlewareReleasesTraceAdderToPool() bool` because the only way to
-		// add one to the context is via NewTraceMiddleware above, which
-		// always adds either a traceMediator or noPoolTraceMediator,
-		// both of which implement that method.
-		//
-		// so going to comment out this implementation that performs safety checks
-		// and depend on the invariant that all RequestTraceAdders in context
-		// for the key traceAdderCtxKey{} implement that method.
-		//
-
-		// if vt, ok := v.(interface{ HTTPMiddlewareReleasesTraceAdderToPool() bool }); !ok || !vt.HTTPMiddlewareReleasesTraceAdderToPool() {
-		// 	return v
-		// }
-
-		if !v.(interface{ HTTPMiddlewareReleasesTraceAdderToPool() bool }).HTTPMiddlewareReleasesTraceAdderToPool() {
-			return v
-		}
-
-		if rf := reqInFlightTracker(ctx); rf != nil && rf.isActive() {
-			return v
-		}
+		return v
 	}
 
 	return nil
@@ -352,30 +256,7 @@ func (u *uRequestTraceAdder) AddTraceToHttpRequest(req *http.Request) *http.Requ
 
 func TraceAdderFromContext(ctx context.Context) requestTraceAdder {
 	if v, ok := ctx.Value(traceAdderCtxKey{}).(requestTraceAdder); ok {
-		//
-		// note that it is impossible right now (2025-12-29) for a RequestTraceAdder
-		// in the context for the key traceAdderCtxKey{} to never implement
-		// `HTTPMiddlewareReleasesTraceAdderToPool() bool` because the only way to
-		// add one to the context is via NewTraceMiddleware above, which
-		// always adds either a traceMediator or noPoolTraceMediator,
-		// both of which implement that method.
-		//
-		// so going to comment out this implementation that performs safety checks
-		// and depend on the invariant that all RequestTraceAdders in context
-		// for the key traceAdderCtxKey{} implement that method.
-		//
-
-		// if vt, ok := v.(interface{ HTTPMiddlewareReleasesTraceAdderToPool() bool }); !ok || !vt.HTTPMiddlewareReleasesTraceAdderToPool() {
-		// 	return v
-		// }
-
-		if !v.(interface{ HTTPMiddlewareReleasesTraceAdderToPool() bool }).HTTPMiddlewareReleasesTraceAdderToPool() {
-			return v
-		}
-
-		rf := reqInFlightTracker(ctx)
-		rf.mustBeActive()
-		return &uRequestTraceAdder{rf, v}
+		return v
 	}
 
 	return nil

@@ -41,6 +41,9 @@ func (rf *reqInFlight) mustBeActive() {
 
 func (rf *reqInFlight) Value(key any) any {
 	if _, ok := key.(ctxKeyRequestInFlight); ok {
+		if !rf.isActive() {
+			return nil
+		}
 		return rf
 	}
 

@@ -166,26 +166,27 @@ RETURN_LAST_HIT:
 	return firstHopAddr.String(), lastOKPrivatePort, lastOKPrivatePortValid
 }
 
-type reqDataState struct {
-	ctx   context.Context
-	start time.Time
-	req   *http.Request
-}
-
 type reqData struct {
 	reqLogCacher
 
-	reqDataState
+	ctx      context.Context
+	start    time.Time
+	req      *http.Request
+	released atomic.Bool
 }
 
-func (rd *reqData) init(ctx context.Context) {
-	rd.ctx = ctx
-	rd.start = time.Now()
+func newReqData(ctx context.Context) *reqData {
+	return &reqData{
+		ctx:          ctx,
+		start:        time.Now(),
+		reqLogCacher: newReqLogCacher(),
+	}
 }
 
-func (rd *reqData) reset() {
+func (rd *reqData) release() {
+	rd.released.Store(true)
+
 	rd.reqLogCacher.reset()
-	rd.reqDataState = reqDataState{}
 }
 
 func (rd *reqData) resolveWithCachedAttrs(ctx context.Context,
@@ -269,44 +270,27 @@ RETURN_LOGGER:
 	return logger.WithAttrs(ctx, slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
 }
 
-func (rd *reqData) checkContext(ctx context.Context) {
-	if ctx != nil {
-		return
-	}
-
-	panic(panicReqNotInFlightMsg)
-}
-
 func (rd *reqData) Value(key any) any {
-	ctx := rd.ctx
-	rd.checkContext(ctx)
-
 	if _, ok := key.(reqDataCtxKey); ok {
+		if rd.released.Load() {
+			return nil
+		}
 		return rd
 	}
 
-	return ctx.Value(key)
+	return rd.ctx.Value(key)
 }
 
 func (rd *reqData) Deadline() (time.Time, bool) {
-	ctx := rd.ctx
-	rd.checkContext(ctx)
-
-	return ctx.Deadline()
+	return rd.ctx.Deadline()
 }
 
 func (rd *reqData) Done() <-chan struct{} {
-	ctx := rd.ctx
-	rd.checkContext(ctx)
-
-	return ctx.Done()
+	return rd.ctx.Done()
 }
 
 func (rd *reqData) Err() error {
-	ctx := rd.ctx
-	rd.checkContext(ctx)
-
-	return ctx.Err()
+	return rd.ctx.Err()
 }
 
 type reqDataCtxKey struct{}
@@ -708,12 +692,6 @@ func (rc *reqLogCacher) reset() {
 	rc.state.Store(reqLogCacheState{nil, nil})
 }
 
-var reqDataPool = sync.Pool{
-	New: func() any {
-		return &reqData{reqLogCacher: newReqLogCacher()}
-	},
-}
-
 type middlewareLoggerConfig struct {
 	emitRCLogs bool
 }
@@ -748,17 +726,8 @@ func MiddlewareLogger(options ...MiddlewareLoggerOption) func(http.Handler) http
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-			var rd *reqData
-			{
-				v := reqDataPool.Get().(*reqData)
-				defer func() {
-					v.reset()
-					reqDataPool.Put(v)
-				}()
-
-				v.init(r.Context())
-				rd = v
-			}
+			rd := newReqData(r.Context())
+			defer rd.release()
 
 			rd.req = r.WithContext(rd)
 

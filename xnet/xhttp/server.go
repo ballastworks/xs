@@ -98,17 +98,9 @@ func DefaultTraceMiddlewareChain(options ...DefaultTraceMiddlewareChainOption) M
 		f(&cfg)
 	}
 
-	var trace Middleware
-	{
-		op := TraceMiddlewareOpts()
-		v, err := NewTraceMiddleware(
-			op.UsePool(true),
-		)
-		if err != nil {
-			panic(err)
-		}
-
-		trace = v
+	trace, err := NewTraceMiddleware()
+	if err != nil {
+		panic(err)
 	}
 
 	spanOperation := cfg.spanOperation
