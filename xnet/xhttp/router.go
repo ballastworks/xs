@@ -527,7 +527,7 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 				type statusCodeProvider interface {
 					StatusCode() int
 				}
-				if v := err.(statusCodeProvider); v != nil {
+				if v, ok := err.(statusCodeProvider); ok {
 					attemptedStatusCode = v.StatusCode()
 				}
 

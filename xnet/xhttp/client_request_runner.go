@@ -307,7 +307,7 @@ func (rr *reqRunner) prepareReqBody(ctx context.Context) error {
 		if rr.cfg.getBodySet {
 			rr.req.GetBody = rr.cfg.getBody
 		}
-		if bodyReader := rr.cfg.body.(io.Reader); bodyReader != nil {
+		if bodyReader, ok := rr.cfg.body.(io.Reader); ok {
 			switch v := bodyReader.(type) {
 			case *bytes.Buffer:
 				rr.cfgBodyClosed = true
@@ -507,7 +507,7 @@ func (rr *reqRunner) buildRequest(ctx context.Context) error {
 
 	rr.authAdder = rr.cfg.authAdder
 	if rr.authAdder != nil {
-		if staticStratCheck := rr.authAdder.(AuthAdderStrategyDescriber); staticStratCheck != nil && staticStratCheck.IsAddAuthToHttpRequestStrategyStatic() {
+		if staticStratCheck, ok := rr.authAdder.(AuthAdderStrategyDescriber); ok && staticStratCheck.IsAddAuthToHttpRequestStrategyStatic() {
 			rr.req = rr.authAdder.AddAuthToHttpRequest(rr.req)
 			rr.authAdder = nil
 		}
@@ -519,10 +519,10 @@ func (rr *reqRunner) buildRequest(ctx context.Context) error {
 
 func (rr *reqRunner) setProtocolResponseSetter() {
 	if rr.cfg.unmarshalJsonTo != nil && rr.cfg.setProtocolResponse {
-		if v := rr.cfg.unmarshalJsonTo.(interface{ SetProtocolResponse(*ClientResponse) }); v != nil {
+		if v, ok := rr.cfg.unmarshalJsonTo.(interface{ SetProtocolResponse(*ClientResponse) }); ok {
 			rr.prsWantsClientResp = true
 			rr.protocolResponseSetter = v
-		} else if v := rr.cfg.unmarshalJsonTo.(interface{ SetProtocolResponse(*http.Response) }); v != nil {
+		} else if v, ok := rr.cfg.unmarshalJsonTo.(interface{ SetProtocolResponse(*http.Response) }); ok {
 			rr.protocolResponseSetter = v
 		} else {
 			return

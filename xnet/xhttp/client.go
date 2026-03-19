@@ -525,7 +525,7 @@ func closePrevAndNextBody(bodyPtr *any, pr *io.Reader) (prevCloseErr, closeErr e
 	if pr != nil {
 		if r = *pr; r != nil {
 			*pr = nil
-			if rc := r.(io.ReadCloser); rc != nil && rc != http.NoBody {
+			if rc, ok := r.(io.ReadCloser); ok && rc != http.NoBody {
 				defer func() {
 					if err := rc.Close(); err != nil {
 						closeErr = fmt.Errorf("new-body close: %w", err)
@@ -538,7 +538,7 @@ func closePrevAndNextBody(bodyPtr *any, pr *io.Reader) (prevCloseErr, closeErr e
 	if *bodyPtr != nil && *bodyPtr != r {
 		b := *bodyPtr
 		*bodyPtr = nil
-		if rc := b.(io.ReadCloser); rc != nil && rc != http.NoBody {
+		if rc, ok := b.(io.ReadCloser); ok && rc != http.NoBody {
 			if err := rc.Close(); err != nil {
 				if pr != nil {
 					prevCloseErr = fmt.Errorf("prev-body close: %w", err)
@@ -1072,7 +1072,7 @@ func (fcr *FluentClientRequest) Close() error {
 	}
 
 	if fcr.cfg.renderType == readerRenderType && fcr.cfg.body != nil && fcr.cfg.body != http.NoBody {
-		if rc := fcr.cfg.body.(io.ReadCloser); rc != nil {
+		if rc, ok := fcr.cfg.body.(io.ReadCloser); ok {
 			if err := rc.Close(); err != nil {
 				fcr.closeErr = err
 				return err
