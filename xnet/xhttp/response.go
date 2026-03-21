@@ -349,8 +349,6 @@ func (resp Response) StaticHandler() http.Handler {
 	} else {
 		handler = func(w http.ResponseWriter, r *http.Request) {
 
-			w.WriteHeader(sc)
-
 			// check for a policy that killed the context which means we should
 			// instead render a 503 to a still connected client
 			{
@@ -368,6 +366,8 @@ func (resp Response) StaticHandler() http.Handler {
 					return
 				}
 			}
+
+			w.WriteHeader(sc)
 
 			_, ignoredErr := w.Write(body)
 			_ = ignoredErr

@@ -500,7 +500,7 @@ func (rr *reqRunner) buildRequest(ctx context.Context) error {
 	rr.req = addTrace(ctx, rr.req)
 
 	if rr.cfg.authAdder != nil {
-		if onChecker := rr.cfg.authAdder.(interface{ IsHttpReqAuthRefresherEnabled() bool }); onChecker == nil || onChecker.IsHttpReqAuthRefresherEnabled() {
+		if onChecker, ok := rr.cfg.authAdder.(interface{ IsHttpReqAuthRefresherEnabled() bool }); !ok || onChecker.IsHttpReqAuthRefresherEnabled() {
 			rr.authRefresher = rr.cfg.authAdder
 		}
 	}
@@ -1103,8 +1103,8 @@ func (rr *reqRunner) closeCfgBody() {
 		return
 	}
 
-	rc := rr.cfg.body.(io.ReadCloser)
-	if rc == nil {
+	rc, ok := rr.cfg.body.(io.ReadCloser)
+	if !ok {
 		return
 	}
 
