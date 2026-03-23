@@ -42,14 +42,28 @@ func recordError(ctx context.Context, err error, msg string) (string, trace.Span
 }
 
 func RecordError(ctx context.Context, err error, msg string) {
+	if err == nil && msg == "" {
+		return
+	}
+
 	recordError(ctx, err, msg)
 }
 
 func Fail(ctx context.Context, err error, msg string) {
-	errMsg, span := recordError(ctx, err, msg)
+	if err != nil || msg != "" {
+		errMsg, span := recordError(ctx, err, msg)
+		if span == nil {
+			return
+		}
+
+		span.SetStatus(codes.Error, errMsg)
+		return
+	}
+
+	span := trace.SpanFromContext(ctx)
 	if span == nil {
 		return
 	}
 
-	span.SetStatus(codes.Error, errMsg)
+	span.SetStatus(codes.Error, "")
 }

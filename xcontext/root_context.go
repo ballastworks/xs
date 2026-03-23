@@ -59,11 +59,7 @@ func WithRootShutdownSignalContext(f func(ctx context.Context, cancel context.Ca
 			logger.Store(someLogger{slog})
 		}
 		getLogger = func() xslog.Logger {
-			if v := logger.Load().(someLogger).v; v != nil {
-				return v
-			}
-
-			return nil
+			return logger.Load().(someLogger).v
 		}
 	}
 
