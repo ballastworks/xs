@@ -1236,15 +1236,15 @@ func (rr *reqRunner) finalize(rPtr **http.Response, crPtr **ClientResponse, errP
 		return
 	}
 
-	if rr.autoCloseRespBody {
-		*crPtr = rr.resp.cr
-		if r := rr.resp.cr.Request; r != nil {
-			if b := r.Body; b != nil {
-				r.Body = nil
-			}
-		}
-	} else {
+	if !rr.autoCloseRespBody {
 		*rPtr = rr.resp.r
+	} else if cr := rr.resp.cr; cr != nil {
+		// client response is not guaranteed to always be non-nil
+		// in the case of DNS failures or connect failures
+		*crPtr = cr
+		if r := cr.Request; r != nil {
+			r.Body = nil
+		}
 	}
 
 	var prevErrCount uint8
