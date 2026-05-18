@@ -113,6 +113,7 @@ type sharedConfig struct {
 	httpClient              http.Client
 	method, path, userAgent string
 	header                  http.Header
+	query                   url.Values
 	perCallTimeout          time.Duration
 	retryBaseDelay          time.Duration
 	retryMaxDelay           time.Duration
@@ -791,6 +792,117 @@ func (reqOpts) AddHeaders(h http.Header) ReqOption {
 // Ideally Header should not be called after addHeaders.
 func (fcr *FluentClientRequest) AddHeaders(h http.Header) *FluentClientRequest {
 	fcr.cfg.addHeaders(h)
+	return fcr
+}
+
+// setQuery destructively sets the http request url query values
+//
+// Ideally setQuery should not be called after addQuery or addQueries.
+func (cfg *sharedConfig) setQuery(v url.Values) {
+	cfg.query = v
+}
+
+func (clientOpts) Query(v url.Values) ClientOption {
+	return func(cfg *clientConfig) {
+		cfg.setQuery(v)
+	}
+}
+
+func (reqOpts) Query(v url.Values) ReqOption {
+	return func(cfg *reqConfig) {
+		cfg.setQuery(v)
+	}
+}
+
+func (fcr *FluentClientRequest) Query(v url.Values) *FluentClientRequest {
+	fcr.cfg.setQuery(v)
+	return fcr
+}
+
+func (cfg *sharedConfig) addQuery(k, v string) {
+	if cfg.query == nil {
+		cfg.query = url.Values{}
+	}
+
+	cfg.query.Set(k, v)
+}
+
+func (clientOpts) AddQuery(k, v string) ClientOption {
+	return func(cfg *clientConfig) {
+		cfg.addQuery(k, v)
+	}
+}
+
+func (reqOpts) AddQuery(k, v string) ReqOption {
+	return func(cfg *reqConfig) {
+		cfg.addQuery(k, v)
+	}
+}
+
+func (fcr *FluentClientRequest) AddQuery(k, v string) *FluentClientRequest {
+	fcr.cfg.addQuery(k, v)
+	return fcr
+}
+
+// cloneMapStrSlice is basically copied from go's http package: "func (h Header) Clone() Header"
+//
+// except that not just nil input return nil, empty input return nil too
+func cloneMapStrSlice(h map[string][]string) map[string][]string {
+	if len(h) == 0 {
+		return nil
+	}
+
+	// Find total number of values.
+	nv := 0
+	for _, vv := range h {
+		nv += len(vv)
+	}
+	sv := make([]string, nv) // shared backing array for headers' values
+	h2 := make(map[string][]string, len(h))
+	for k, vv := range h {
+		if vv == nil {
+			// Preserve nil values. ReverseProxy distinguishes
+			// between nil and zero-length header values.
+			h2[k] = nil
+			continue
+		}
+		n := copy(sv, vv)
+		h2[k] = sv[:n:n]
+		sv = sv[n:]
+	}
+	return h2
+}
+
+func (cfg *sharedConfig) addQueries(v url.Values) {
+	if len(v) == 0 {
+		return
+	}
+
+	v = url.Values(cloneMapStrSlice(v))
+
+	if cfg.query == nil {
+		cfg.query = v
+	} else {
+		for k, v := range v {
+			cfg.query[k] = v
+		}
+	}
+}
+
+func (clientOpts) AddQueries(v url.Values) ClientOption {
+	return func(cfg *clientConfig) {
+		cfg.addQueries(v)
+	}
+}
+
+func (reqOpts) AddQueries(v url.Values) ReqOption {
+	return func(cfg *reqConfig) {
+		cfg.addQueries(v)
+	}
+}
+
+func (fcr *FluentClientRequest) AddQueries(v url.Values) *FluentClientRequest {
+	fcr.cfg.addQueries(v)
 	return fcr
 }
 

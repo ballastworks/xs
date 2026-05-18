@@ -27,6 +27,7 @@ import (
 
 var (
 	ErrEmptyJSONRequestBody = errors.New("empty json request body")
+	errBadPath              = errors.New("bad request path")
 )
 
 // TODO: bufferAndCloseBody should not allow for an infinite buffer size by default
@@ -471,9 +472,22 @@ func (rr *reqRunner) prepareReqBody(ctx context.Context) error {
 func (rr *reqRunner) buildRequest(ctx context.Context) error {
 
 	rr.req = rr.c.newReq(rr.cfg.method, rr.cfg.path)
+	if rr.req.URL.RawQuery != "" || rr.req.URL.RawFragment != "" {
+		return errBadPath
+	}
 
 	for k, v := range rr.cfg.header {
 		rr.req.Header[textproto.CanonicalMIMEHeaderKey(k)] = v
+	}
+
+	if otherQ := rr.cfg.query; len(otherQ) > 0 {
+		q := rr.req.URL.Query()
+
+		for k, v := range otherQ {
+			q[k] = v
+		}
+
+		rr.req.URL.RawQuery = q.Encode()
 	}
 
 	if err := rr.prepareReqBody(ctx); err != nil {
