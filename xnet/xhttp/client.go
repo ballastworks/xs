@@ -120,6 +120,8 @@ type sharedConfig struct {
 	retryMaxTimeout         time.Duration
 	retryEnabled            bool
 	setProtocolResponse     bool
+	cowDoneHeader           bool
+	cowDoneQuery            bool
 }
 
 type clientConfig struct {
@@ -684,7 +686,12 @@ func (fcr *FluentClientRequest) JsonBody(b any) *FluentClientRequest {
 //
 // Ideally setHeader should not be called after addHeader or addHeaders.
 func (cfg *sharedConfig) setHeader(h http.Header) {
-	cfg.header = h.Clone()
+	if len(h) == 0 {
+		cfg.header = nil
+	} else {
+		cfg.header = h.Clone()
+	}
+	cfg.cowDoneHeader = true
 }
 
 // Header destructively sets the http header contents
@@ -719,7 +726,10 @@ func (fcr *FluentClientRequest) Header(h http.Header) *FluentClientRequest {
 func (cfg *sharedConfig) addHeader(k, v string) {
 	if cfg.header == nil {
 		cfg.header = http.Header{}
+	} else if !cfg.cowDoneHeader {
+		cfg.header = cfg.header.Clone()
 	}
+	cfg.cowDoneHeader = true
 
 	cfg.header.Set(k, v)
 }
@@ -762,7 +772,13 @@ func (cfg *sharedConfig) addHeaders(h http.Header) {
 
 	if cfg.header == nil {
 		cfg.header = h
+		cfg.cowDoneHeader = true
 	} else {
+		if !cfg.cowDoneHeader {
+			cfg.header = cfg.header.Clone()
+			cfg.cowDoneHeader = true
+		}
+
 		for k, v := range h {
 			cfg.header[k] = v
 		}
@@ -799,7 +815,8 @@ func (fcr *FluentClientRequest) AddHeaders(h http.Header) *FluentClientRequest {
 //
 // Ideally setQuery should not be called after addQuery or addQueries.
 func (cfg *sharedConfig) setQuery(v url.Values) {
-	cfg.query = v
+	cfg.query = cloneMapStrSlice(v)
+	cfg.cowDoneQuery = true
 }
 
 func (clientOpts) Query(v url.Values) ClientOption {
@@ -822,7 +839,10 @@ func (fcr *FluentClientRequest) Query(v url.Values) *FluentClientRequest {
 func (cfg *sharedConfig) addQuery(k, v string) {
 	if cfg.query == nil {
 		cfg.query = url.Values{}
+	} else if !cfg.cowDoneQuery {
+		cfg.query = cloneMapStrSlice(cfg.query)
 	}
+	cfg.cowDoneQuery = true
 
 	cfg.query.Set(k, v)
 }
@@ -882,7 +902,13 @@ func (cfg *sharedConfig) addQueries(v url.Values) {
 
 	if cfg.query == nil {
 		cfg.query = v
+		cfg.cowDoneQuery = true
 	} else {
+		if !cfg.cowDoneQuery {
+			cfg.query = cloneMapStrSlice(cfg.query)
+			cfg.cowDoneQuery = true
+		}
+
 		for k, v := range v {
 			cfg.query[k] = v
 		}
@@ -1012,6 +1038,18 @@ func (fcr *FluentClientRequest) SetProtocolResponse(b bool) *FluentClientRequest
 func (c *Client) reqConfig() reqConfig {
 	var cfg reqConfig
 	cfg.sharedConfig = c.cfg.sharedConfig
+	if len(cfg.sharedConfig.header) == 0 {
+		cfg.sharedConfig.header = nil
+		cfg.cowDoneHeader = true
+	} else {
+		cfg.cowDoneHeader = false
+	}
+	if len(cfg.sharedConfig.query) == 0 {
+		cfg.sharedConfig.query = nil
+		cfg.cowDoneQuery = true
+	} else {
+		cfg.cowDoneQuery = false
+	}
 	return cfg
 }
 
