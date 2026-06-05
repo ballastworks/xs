@@ -124,7 +124,7 @@ func (drs *defaultReqShedder) shedRequest(next http.Handler, w http.ResponseWrit
 	// or raise a PR to make this mutable in a safe way
 	if r.Method == http.MethodGet {
 		switch r.URL.Path {
-		case "/healthcheck", "/healthcheck/":
+		case "/healthz", "/healthz/", "/readyz", "/readyz/":
 			handled = true
 			next.ServeHTTP(w, r)
 			return handled, shedding
