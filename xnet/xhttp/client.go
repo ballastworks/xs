@@ -517,7 +517,7 @@ func (clientOpts) UserAgent(s string) ClientOption {
 	}
 }
 
-func (cfg ReqOption) UserAgent(s string) ReqOption {
+func (cfg reqOpts) UserAgent(s string) ReqOption {
 	return func(cfg *reqConfig) {
 		cfg.setUserAgent(s)
 	}

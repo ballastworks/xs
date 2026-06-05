@@ -2,6 +2,7 @@ package xspan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go.opentelemetry.io/otel/codes"
@@ -9,16 +10,22 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+var (
+	errorStringKV = semconv.ExceptionTypeKey.String("errorString")
+)
+
 func recordError(ctx context.Context, err error, msg string) (string, trace.Span) {
+	// invariants:
+	// - ctx must not be nil
+	// - err must be non-nil or msg must be non-nil
 	span := trace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return "", nil
 	}
 
 	if err == nil {
-
-		span.RecordError(err, trace.WithAttributes(
-			semconv.ExceptionTypeKey.String("errorString"),
+		span.RecordError(errors.New(msg), trace.WithAttributes(
+			errorStringKV,
 			semconv.ExceptionMessage(msg),
 		))
 
