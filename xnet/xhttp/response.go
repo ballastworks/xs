@@ -21,15 +21,21 @@ import (
 )
 
 var (
-	errStaticHandlerUnavailable = NewErrResp(http.StatusServiceUnavailable, "service-unavailable", "static handler detected context deadline exceeded likely due to some internal response timeout policy")
+	errStaticHandlerUnavailable = NewErrResp(
+		ErrRespOpts().StatusCode(http.StatusServiceUnavailable),
+		ErrRespOpts().ErrCode("service-unavailable"),
+		ErrRespOpts().DevMsg("static handler detected context deadline exceeded likely due to some internal response timeout policy"),
+	)
 )
 
 type ErrResponse struct {
-	factory    *ResponseFactory
-	cause      error
-	statusCode int
-	errCode    string
-	devMsg     string
+	factory       *ResponseFactory
+	cause         error
+	statusCode    int
+	errCode       string
+	devMsg        string
+	header        http.Header
+	cowDoneHeader bool
 
 	withErrRespConfig
 }
@@ -167,12 +173,20 @@ func (er ErrResponse) body() any {
 func (er ErrResponse) Resp() Response {
 	// TODO: see if allocations can be reduced by using a pointer receiver instead of making a copy
 	// verify that such a change does not introduce side effects
+
+	header := er.header
+	if header == nil {
+		header = http.Header{}
+	} else if !er.cowDoneHeader {
+		header = header.Clone()
+	}
+
 	return Response{
 		er.factory,
 		er,
 		responseBodyJson,
 		er.getStatusCode(),
-		http.Header{},
+		header,
 		er.body(),
 		er.withRespConfig,
 	}
@@ -211,12 +225,12 @@ const (
 )
 
 type Response struct {
-	factory *ResponseFactory
-	errResp error
-	responseBodyType
-	statusCode int
-	header     http.Header
-	body       any
+	factory          *ResponseFactory
+	errResp          error
+	responseBodyType responseBodyType
+	statusCode       int
+	header           http.Header
+	body             any
 
 	withRespConfig
 }

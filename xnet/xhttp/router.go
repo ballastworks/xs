@@ -19,7 +19,12 @@ var (
 	ErrHandlerPanicUnknownCause = errors.New("panic in handler from unknown cause")
 	ErrBadRouterConfig          = errors.New("bad router config")
 
-	errRespGatewayTimeout = NewErrResp(http.StatusGatewayTimeout, "gateway-timeout", "likely encountered a timeout with an upstream service or an internal client")
+	errRespGatewayTimeout = NewErrResp(
+		ErrRespOpts().StatusCode(http.StatusGatewayTimeout),
+		ErrRespOpts().ErrCode("gateway-timeout"),
+		ErrRespOpts().DevMsg("likely encountered a timeout with an upstream service or an internal client"),
+		ErrRespOpts().FailSpan(true),
+	)
 )
 
 type errHandlerFunc = func(http.ResponseWriter, *http.Request) error
@@ -504,9 +509,7 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 				// to signal them to try again as the cause was likely due to
 				// an internal client or upstream service timing out
 
-				errRespGatewayTimeout.CausedBy(ctx, err).With(
-					WithErrRespOpts().FailSpan(true),
-				).WriteResp(ctx, w)
+				errRespGatewayTimeout.CausedBy(ctx, err).WriteResp(ctx, w)
 				return
 			}
 
@@ -558,9 +561,7 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 
 			// TODO: test what happens if http after-read compute and reply timeout is set and reached
 
-			errRespGatewayTimeout.CausedBy(ctx, err).With(
-				WithErrRespOpts().FailSpan(true),
-			).WriteResp(ctx, w)
+			errRespGatewayTimeout.CausedBy(ctx, err).WriteResp(ctx, w)
 			return
 		}
 
@@ -568,12 +569,20 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 		// render a general 500 response
 		//
 
-		NewInternalErrResp(err).With(
-			WithErrRespOpts().FailSpan(true),
-		).WriteResp(ctx, w)
+		NewInternalErrResp(err).
+			With(WithErrRespOpts().FailSpan(true)).
+			WriteResp(ctx, w)
 	})
 }
 
-var routerNotFoundHandler = NewErrResp(http.StatusNotFound, "not-found", "Route Not Found").StaticHandler()
+var routerNotFoundHandler = NewErrResp(
+	ErrRespOpts().StatusCode(http.StatusNotFound),
+	ErrRespOpts().ErrCode("not-found"),
+	ErrRespOpts().DevMsg("Route Not Found"),
+).StaticHandler()
 
-var routerMethodNotAllowedHandler = NewErrResp(http.StatusMethodNotAllowed, "method-not-allowed", "Method Not Allowed").StaticHandler()
+var routerMethodNotAllowedHandler = NewErrResp(
+	ErrRespOpts().StatusCode(http.StatusMethodNotAllowed),
+	ErrRespOpts().ErrCode("method-not-allowed"),
+	ErrRespOpts().DevMsg("Method Not Allowed"),
+).StaticHandler()

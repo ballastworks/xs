@@ -14,12 +14,12 @@ var (
 
 // nil factory exports:
 
-func NewInternalErrResp(err error) ErrResponse {
-	return (*ResponseFactory)(nil).NewInternalErr(err)
+func NewInternalErrResp(cause error) ErrResponse {
+	return (*ResponseFactory)(nil).NewInternalErr(cause)
 }
 
-func NewErrResp(statusCode int, errCode, devMsg string) ErrResponse {
-	return (*ResponseFactory)(nil).NewErr(statusCode, errCode, devMsg)
+func NewErrResp(options ...ErrRespOption) ErrResponse {
+	return (*ResponseFactory)(nil).NewErr(options...)
 }
 
 func NewResp(options ...RespOption) Response {
@@ -54,7 +54,8 @@ func NewResponseFactory(options ...ResponseFactoryOption) (*ResponseFactory, err
 	return &ResponseFactory{cfg.logf, cfg.errRespLoggingFunc}, nil
 }
 
-func (rf *ResponseFactory) NewInternalErr(err error) ErrResponse {
+func (rf *ResponseFactory) NewInternalErr(cause error) ErrResponse {
+	err := cause
 	if v, ok := err.(ErrResponse); ok {
 		return v
 	} else if te, ok := err.(interface{ Unwrap() error }); ok {
@@ -66,24 +67,46 @@ func (rf *ResponseFactory) NewInternalErr(err error) ErrResponse {
 		err = xerrors.WithStack(err)
 	}
 
-	return ErrResponse{
-		rf,
-		err,
-		http.StatusInternalServerError,
-		"internal-server-error",
-		"Internal Server Error",
-		withErrRespConfig{},
-	}
+	er := rf.NewErr()
+	er.cause = err
+	return er
 }
 
-func (rf *ResponseFactory) NewErr(statusCode int, errCode, devMsg string) ErrResponse {
+func (rf *ResponseFactory) NewErr(options ...ErrRespOption) ErrResponse {
+
+	cfg := errRespConfig{
+		factory:    rf,
+		statusCode: http.StatusInternalServerError,
+	}
+
+	for _, f := range options {
+		f(&cfg)
+	}
+
+	if len(options) == 1 && cfg.cause != nil {
+
+	}
+
+	if cfg.statusCode == http.StatusInternalServerError {
+
+		if cfg.errCode == "" {
+			cfg.errCode = "internal-server-error"
+		}
+
+		if cfg.devMsg == "" {
+			cfg.devMsg = "Internal Server Error"
+		}
+	}
+
 	return ErrResponse{
-		rf,
-		nil,
-		statusCode,
-		errCode,
-		devMsg,
-		withErrRespConfig{},
+		cfg.factory,
+		cfg.cause,
+		cfg.statusCode,
+		cfg.errCode,
+		cfg.devMsg,
+		cfg.header,
+		cfg.cowDoneHeader,
+		cfg.withErrRespConfig,
 	}
 }
 

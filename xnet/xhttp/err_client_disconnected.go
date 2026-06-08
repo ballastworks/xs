@@ -21,7 +21,11 @@ var (
 
 	errMsgClientDisconnected = errMsgClientDisconnectedPrefix + context.Canceled.Error()
 
-	errRespClientDisconnected = NewErrResp(StatusClientDisconnected, "client-disconnected", "Client Disconnected")
+	errRespClientDisconnected = NewErrResp(
+		ErrRespOpts().StatusCode(StatusClientDisconnected),
+		ErrRespOpts().ErrCode("client-disconnected"),
+		ErrRespOpts().DevMsg("Client Disconnected"),
+	)
 
 	ErrClientDisconnected = fmt.Errorf(errMsgClientDisconnectedPrefix+"%w", context.Canceled)
 )

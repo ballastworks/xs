@@ -115,7 +115,7 @@ func (respOpts) AddHeaders(k string, values ...string) RespOption {
 
 // StatusCode should be used to convey standard non-error responses and not to
 // construct error messages or messages in general with error status codes. To
-// construct error messages instead see NewErrResp and NewInternalErrResp.
+// construct error messages instead see NewErrResp.
 //
 // This function panics if the status code value is less than zero.
 //
