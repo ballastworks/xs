@@ -8,12 +8,13 @@ import (
 )
 
 type errRespConfig struct {
-	factory    *ResponseFactory
-	statusCode int
-	header     http.Header
-	cause      error
-	errCode    string
-	devMsg     string
+	factory      *ResponseFactory
+	statusCode   int
+	header       http.Header
+	cause        error
+	errCode      string
+	devMsg       string
+	stacktraceOn bool
 
 	withErrRespConfig withErrRespConfig
 }
@@ -141,6 +142,12 @@ func (errRespOpts) Cause(v error) ErrRespOption {
 func (errRespOpts) ErrCode(s string) ErrRespOption {
 	return func(cfg *errRespConfig) {
 		cfg.errCode = s
+	}
+}
+
+func (errRespOpts) StacktraceOn(b bool) ErrRespOption {
+	return func(cfg *errRespConfig) {
+		cfg.stacktraceOn = b
 	}
 }
 

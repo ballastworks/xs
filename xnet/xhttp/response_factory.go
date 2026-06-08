@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/ballastworks/xs/internal/xi_errors"
 	"github.com/ballastworks/xs/xerrors"
 	"github.com/ballastworks/xs/xlog/xslog"
 )
@@ -92,6 +93,10 @@ func (rf *ResponseFactory) NewErr(options ...ErrRespOption) ErrResponse {
 		if cfg.devMsg == "" {
 			cfg.devMsg = "Internal Server Error"
 		}
+	}
+
+	if cfg.stacktraceOn && cfg.cause != nil && xi_errors.StacktraceFromError(cfg.cause) == nil {
+		cfg.cause = xerrors.WithStack(cfg.cause)
 	}
 
 	return ErrResponse{

@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func BenchmarkWriteStackTrace(b *testing.B) {
+func BenchmarkWriteStacktrace(b *testing.B) {
 	f := func() {
 		err := New("hello there")
 		if v, ok := err.(StacktraceLease); ok {

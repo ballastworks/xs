@@ -25,6 +25,7 @@ var (
 		ErrRespOpts().StatusCode(http.StatusServiceUnavailable),
 		ErrRespOpts().ErrCode("service-unavailable"),
 		ErrRespOpts().DevMsg("static handler detected context deadline exceeded likely due to some internal response timeout policy"),
+		ErrRespOpts().FailSpan(true),
 	)
 )
 
@@ -342,9 +343,7 @@ func (resp Response) StaticHandler() http.Handler {
 						delete(h, k)
 					}
 
-					errStaticHandlerUnavailable.CausedBy(ctx, err).With(
-						WithErrRespOpts().FailSpan(true),
-					).WriteResp(ctx, w)
+					errStaticHandlerUnavailable.CausedBy(ctx, err).WriteResp(ctx, w)
 					return
 				}
 			}
@@ -371,9 +370,7 @@ func (resp Response) StaticHandler() http.Handler {
 					// TODO: test what happens if http after-read compute and
 					// reply timeout is set and reached
 
-					errStaticHandlerUnavailable.CausedBy(ctx, err).With(
-						WithErrRespOpts().FailSpan(true),
-					).WriteResp(ctx, w)
+					errStaticHandlerUnavailable.CausedBy(ctx, err).WriteResp(ctx, w)
 					return
 				}
 			}
