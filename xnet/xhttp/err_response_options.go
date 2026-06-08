@@ -8,13 +8,12 @@ import (
 )
 
 type errRespConfig struct {
-	factory       *ResponseFactory
-	statusCode    int
-	header        http.Header
-	cause         error
-	errCode       string
-	devMsg        string
-	cowDoneHeader bool
+	factory    *ResponseFactory
+	statusCode int
+	header     http.Header
+	cause      error
+	errCode    string
+	devMsg     string
 
 	withErrRespConfig withErrRespConfig
 }
@@ -45,55 +44,83 @@ func (errRespOpts) LoggerFactory(logf xslog.LoggerFactory) ErrRespOption {
 	}
 }
 
-func (errRespOpts) Headers(h http.Header) ErrRespOption {
+// Header destructively sets the http header contents
+//
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetHeaders()
+func (errRespOpts) Header(h http.Header) ErrRespOption {
 	return func(cfg *errRespConfig) {
-		cfg.header = h
-		cfg.cowDoneHeader = false
+		cfg.header = h.Clone()
 	}
 }
 
-func (errRespOpts) SetHeader(k, v string) ErrRespOption {
+// SetHeaders takes all key-value pairs from a header and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the header set.
+//
+// To completely replace all pairs regardless of overlap, use Header()
+func (errRespOpts) SetHeaders(h http.Header) ErrRespOption {
+	if len(h) == 0 {
+		return func(*errRespConfig) {}
+	}
+
 	return func(cfg *errRespConfig) {
 		if cfg.header == nil {
 			cfg.header = http.Header{}
-		} else if !cfg.cowDoneHeader {
-			cfg.header = cfg.header.Clone()
 		}
-		cfg.cowDoneHeader = true
+
+		for k, v := range h.Clone() {
+			cfg.header[k] = v
+		}
+	}
+}
+
+func (errRespOpts) HeaderValue(k, v string) ErrRespOption {
+	return func(cfg *errRespConfig) {
+		if cfg.header == nil {
+			cfg.header = http.Header{}
+		}
 
 		cfg.header.Set(k, v)
 	}
 }
 
-func (errRespOpts) AddHeader(k, v string) ErrRespOption {
+func (errRespOpts) HeaderValues(k string, values ...string) ErrRespOption {
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
 	return func(cfg *errRespConfig) {
 		if cfg.header == nil {
 			cfg.header = http.Header{}
-		} else if !cfg.cowDoneHeader {
-			cfg.header = cfg.header.Clone()
 		}
-		cfg.cowDoneHeader = true
+
+		v := make([]string, len(values))
+		copy(v, values)
+
+		cfg.header[k] = v
+	}
+}
+
+func (errRespOpts) AddHeaderValue(k, v string) ErrRespOption {
+	return func(cfg *errRespConfig) {
+		if cfg.header == nil {
+			cfg.header = http.Header{}
+		}
 
 		cfg.header.Add(k, v)
 	}
 }
 
-func (errRespOpts) AddHeaders(k string, values ...string) ErrRespOption {
+func (errRespOpts) AddHeaderValues(k string, values ...string) ErrRespOption {
+	if len(values) == 0 {
+		return func(*errRespConfig) {}
+	}
 
 	k = textproto.CanonicalMIMEHeaderKey(k)
 
 	return func(cfg *errRespConfig) {
-
-		if len(values) == 0 {
-			return
-		}
-
 		if cfg.header == nil {
 			cfg.header = http.Header{}
-		} else if !cfg.cowDoneHeader {
-			cfg.header = cfg.header.Clone()
 		}
-		cfg.cowDoneHeader = true
 
 		cfg.header[k] = append(cfg.header[k], values...)
 	}

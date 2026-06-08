@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/textproto"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -683,8 +684,6 @@ func (fcr *FluentClientRequest) JsonBody(b any) *FluentClientRequest {
 }
 
 // setHeader destructively sets the http header contents
-//
-// Ideally setHeader should not be called after addHeader or addHeaders.
 func (cfg *sharedConfig) setHeader(h http.Header) {
 	if len(h) == 0 {
 		cfg.header = nil
@@ -696,7 +695,8 @@ func (cfg *sharedConfig) setHeader(h http.Header) {
 
 // Header destructively sets the http header contents
 //
-// Ideally Header should not be called after addHeader or addHeaders.
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetHeaders()
 func (clientOpts) Header(h http.Header) ClientOption {
 	return func(cfg *clientConfig) {
 		cfg.setHeader(h)
@@ -705,7 +705,8 @@ func (clientOpts) Header(h http.Header) ClientOption {
 
 // Header destructively sets the http header contents
 //
-// Ideally Header should not be called after addHeader or addHeaders.
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetHeaders()
 func (reqOpts) Header(h http.Header) ReqOption {
 	return func(cfg *reqConfig) {
 		cfg.setHeader(h)
@@ -714,16 +715,14 @@ func (reqOpts) Header(h http.Header) ReqOption {
 
 // Header destructively sets the http header contents
 //
-// Ideally Header should not be called after addHeader or addHeaders.
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetHeaders()
 func (fcr *FluentClientRequest) Header(h http.Header) *FluentClientRequest {
 	fcr.cfg.setHeader(h)
 	return fcr
 }
 
-// addHeader adds a header key-value pair to the current http header
-//
-// Ideally setHeader should not be called after addHeader.
-func (cfg *sharedConfig) addHeader(k, v string) {
+func (cfg *sharedConfig) setHeaderValue(k, v string) {
 	if cfg.header == nil {
 		cfg.header = http.Header{}
 	} else if !cfg.cowDoneHeader {
@@ -734,36 +733,137 @@ func (cfg *sharedConfig) addHeader(k, v string) {
 	cfg.header.Set(k, v)
 }
 
-// AddHeader adds a header key-value pair to the current http header
-//
-// Ideally Header should not be called after addHeader.
-func (clientOpts) AddHeader(k, v string) ClientOption {
+func (clientOpts) HeaderValue(k, v string) ClientOption {
 	return func(cfg *clientConfig) {
-		cfg.addHeader(k, v)
+		cfg.setHeaderValue(k, v)
 	}
 }
 
-// AddHeader adds a header key-value pair to the current http header
-//
-// Ideally Header should not be called after addHeader.
-func (reqOpts) AddHeader(k, v string) ReqOption {
+func (reqOpts) HeaderValue(k, v string) ReqOption {
 	return func(cfg *reqConfig) {
-		cfg.addHeader(k, v)
+		cfg.setHeaderValue(k, v)
 	}
 }
 
-// AddHeader adds a header key-value pair to the current http header
-//
-// Ideally Header should not be called after addHeader.
-func (fcr *FluentClientRequest) AddHeader(k, v string) *FluentClientRequest {
-	fcr.cfg.addHeader(k, v)
+func (fcr *FluentClientRequest) HeaderValue(k, v string) *FluentClientRequest {
+	fcr.cfg.setHeaderValue(k, v)
 	return fcr
 }
 
-// addHeaders adds multiple key-value pairs to the current http header
-//
-// Ideally setHeader should not be called after addHeaders.
-func (cfg *sharedConfig) addHeaders(h http.Header) {
+func (cfg *sharedConfig) setHeaderValues(k string, values ...string) {
+	v := make([]string, len(values))
+	copy(v, values)
+
+	if cfg.header == nil {
+		cfg.header = http.Header{}
+	} else if !cfg.cowDoneHeader {
+		cfg.header = cfg.header.Clone()
+	}
+	cfg.cowDoneHeader = true
+
+	cfg.header[k] = v
+}
+
+func (clientOpts) HeaderValues(k string, values ...string) ClientOption {
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
+	return func(cfg *clientConfig) {
+		cfg.setHeaderValues(k, values...)
+	}
+}
+
+func (reqOpts) HeaderValues(k string, values ...string) ReqOption {
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
+	return func(cfg *reqConfig) {
+		cfg.setHeaderValues(k, values...)
+	}
+}
+
+func (fcr *FluentClientRequest) HeaderValues(k string, values ...string) *FluentClientRequest {
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
+	fcr.cfg.setHeaderValues(k, values...)
+	return fcr
+}
+
+func (cfg *sharedConfig) addHeaderValue(k, v string) {
+	if cfg.header == nil {
+		cfg.header = http.Header{}
+	} else if !cfg.cowDoneHeader {
+		cfg.header = cfg.header.Clone()
+	}
+	cfg.cowDoneHeader = true
+
+	cfg.header.Add(k, v)
+}
+
+func (clientOpts) AddHeaderValue(k, v string) ClientOption {
+	return func(cfg *clientConfig) {
+		cfg.addHeaderValue(k, v)
+	}
+}
+
+func (reqOpts) AddHeaderValue(k, v string) ReqOption {
+	return func(cfg *reqConfig) {
+		cfg.addHeaderValue(k, v)
+	}
+}
+
+func (fcr *FluentClientRequest) AddHeaderValue(k, v string) *FluentClientRequest {
+	fcr.cfg.addHeaderValue(k, v)
+	return fcr
+}
+
+func (cfg *sharedConfig) addHeaderValues(k string, values ...string) {
+	if cfg.header == nil {
+		cfg.header = http.Header{}
+	} else if !cfg.cowDoneHeader {
+		cfg.header = cfg.header.Clone()
+	}
+	cfg.cowDoneHeader = true
+
+	cfg.header[k] = append(cfg.header[k], values...)
+}
+
+func (clientOpts) AddHeaderValues(k string, values ...string) ClientOption {
+	if len(values) == 0 {
+		return func(*clientConfig) {}
+	}
+
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
+	return func(cfg *clientConfig) {
+		cfg.addHeaderValues(k, values...)
+	}
+}
+
+func (reqOpts) AddHeaderValues(k string, values ...string) ReqOption {
+	if len(values) == 0 {
+		return func(*reqConfig) {}
+	}
+
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
+	return func(cfg *reqConfig) {
+		cfg.addHeaderValues(k, values...)
+	}
+}
+
+func (fcr *FluentClientRequest) AddHeaderValues(k string, values ...string) *FluentClientRequest {
+	if len(values) == 0 {
+		return fcr
+	}
+
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
+	fcr.cfg.addHeaderValues(k, values...)
+
+	return fcr
+}
+
+// setHeaders inserts multiple key-value pairs to the current http header
+func (cfg *sharedConfig) setHeaders(h http.Header) {
 	if len(h) == 0 {
 		return
 	}
@@ -785,29 +885,35 @@ func (cfg *sharedConfig) addHeaders(h http.Header) {
 	}
 }
 
-// AddHeaders adds multiple key-value pairs to the current http header
+// SetHeaders takes all key-value pairs from a header and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the header set.
 //
-// Ideally Header should not be called after addHeaders.
-func (clientOpts) AddHeaders(h http.Header) ClientOption {
+// To completely replace all pairs regardless of overlap, use Header()
+func (clientOpts) SetHeaders(h http.Header) ClientOption {
 	return func(cfg *clientConfig) {
-		cfg.addHeaders(h)
+		cfg.setHeaders(h)
 	}
 }
 
-// AddHeaders adds multiple key-value pairs to the current http header
+// SetHeaders takes all key-value pairs from a header and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the header set.
 //
-// Ideally Header should not be called after addHeaders.
-func (reqOpts) AddHeaders(h http.Header) ReqOption {
+// To completely replace all pairs regardless of overlap, use Header()
+func (reqOpts) SetHeaders(h http.Header) ReqOption {
 	return func(cfg *reqConfig) {
-		cfg.addHeaders(h)
+		cfg.setHeaders(h)
 	}
 }
 
-// AddHeaders adds multiple key-value pairs to the current http header
+// SetHeaders takes all key-value pairs from a header and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the header set.
 //
-// Ideally Header should not be called after addHeaders.
-func (fcr *FluentClientRequest) AddHeaders(h http.Header) *FluentClientRequest {
-	fcr.cfg.addHeaders(h)
+// To completely replace all pairs regardless of overlap, use Header()
+func (fcr *FluentClientRequest) SetHeaders(h http.Header) *FluentClientRequest {
+	fcr.cfg.setHeaders(h)
 	return fcr
 }
 
@@ -819,24 +925,36 @@ func (cfg *sharedConfig) setQuery(v url.Values) {
 	cfg.cowDoneQuery = true
 }
 
+// Query destructively sets the url query contents
+//
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetQueries()
 func (clientOpts) Query(v url.Values) ClientOption {
 	return func(cfg *clientConfig) {
 		cfg.setQuery(v)
 	}
 }
 
+// Query destructively sets the url query contents
+//
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetQueries()
 func (reqOpts) Query(v url.Values) ReqOption {
 	return func(cfg *reqConfig) {
 		cfg.setQuery(v)
 	}
 }
 
+// Query destructively sets the url query contents
+//
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetQueries()
 func (fcr *FluentClientRequest) Query(v url.Values) *FluentClientRequest {
 	fcr.cfg.setQuery(v)
 	return fcr
 }
 
-func (cfg *sharedConfig) addQuery(k, v string) {
+func (cfg *sharedConfig) setQueryValue(k, v string) {
 	if cfg.query == nil {
 		cfg.query = url.Values{}
 	} else if !cfg.cowDoneQuery {
@@ -847,20 +965,120 @@ func (cfg *sharedConfig) addQuery(k, v string) {
 	cfg.query.Set(k, v)
 }
 
-func (clientOpts) AddQuery(k, v string) ClientOption {
+func (clientOpts) QueryValue(k, v string) ClientOption {
 	return func(cfg *clientConfig) {
-		cfg.addQuery(k, v)
+		cfg.setQueryValue(k, v)
 	}
 }
 
-func (reqOpts) AddQuery(k, v string) ReqOption {
+func (reqOpts) QueryValue(k, v string) ReqOption {
 	return func(cfg *reqConfig) {
-		cfg.addQuery(k, v)
+		cfg.setQueryValue(k, v)
 	}
 }
 
-func (fcr *FluentClientRequest) AddQuery(k, v string) *FluentClientRequest {
-	fcr.cfg.addQuery(k, v)
+func (fcr *FluentClientRequest) QueryValue(k, v string) *FluentClientRequest {
+	fcr.cfg.setQueryValue(k, v)
+	return fcr
+}
+
+func (cfg *sharedConfig) addQueryValue(k, v string) {
+	if cfg.query == nil {
+		cfg.query = url.Values{}
+	} else if !cfg.cowDoneQuery {
+		cfg.query = cloneMapStrSlice(cfg.query)
+	}
+	cfg.cowDoneQuery = true
+
+	cfg.query.Add(k, v)
+}
+
+func (clientOpts) AddQueryValue(k, v string) ClientOption {
+	return func(cfg *clientConfig) {
+		cfg.addQueryValue(k, v)
+	}
+}
+
+func (reqOpts) AddQueryValue(k, v string) ReqOption {
+	return func(cfg *reqConfig) {
+		cfg.addQueryValue(k, v)
+	}
+}
+
+func (fcr *FluentClientRequest) AddQueryValue(k, v string) *FluentClientRequest {
+	fcr.cfg.addQueryValue(k, v)
+	return fcr
+}
+
+func (cfg *sharedConfig) addQueryValues(k string, values ...string) {
+	if cfg.query == nil {
+		cfg.query = url.Values{}
+	} else if !cfg.cowDoneQuery {
+		cfg.query = cloneMapStrSlice(cfg.query)
+	}
+	cfg.cowDoneQuery = true
+
+	cfg.query[k] = append(cfg.query[k], values...)
+}
+
+func (clientOpts) AddQueryValues(k string, values ...string) ClientOption {
+	if len(values) == 0 {
+		return func(*clientConfig) {}
+	}
+
+	return func(cfg *clientConfig) {
+		cfg.addQueryValues(k, values...)
+	}
+}
+
+func (reqOpts) AddQueryValues(k string, values ...string) ReqOption {
+	if len(values) == 0 {
+		return func(*reqConfig) {}
+	}
+
+	return func(cfg *reqConfig) {
+		cfg.addQueryValues(k, values...)
+	}
+}
+
+func (fcr *FluentClientRequest) AddQueryValues(k string, values ...string) *FluentClientRequest {
+	if len(values) == 0 {
+		return fcr
+	}
+
+	fcr.cfg.addQueryValues(k, values...)
+
+	return fcr
+}
+
+func (cfg *sharedConfig) setQueryValues(k string, values ...string) {
+	if cfg.query == nil {
+		cfg.query = url.Values{}
+	} else if !cfg.cowDoneQuery {
+		cfg.query = cloneMapStrSlice(cfg.query)
+	}
+	cfg.cowDoneQuery = true
+
+	v := make([]string, len(values))
+	copy(v, values)
+
+	cfg.query[k] = v
+}
+
+func (clientOpts) QueryValues(k string, values ...string) ClientOption {
+	return func(cfg *clientConfig) {
+		cfg.setQueryValues(k, values...)
+	}
+}
+
+func (reqOpts) QueryValues(k string, values ...string) ReqOption {
+	return func(cfg *reqConfig) {
+		cfg.setQueryValues(k, values...)
+	}
+}
+
+func (fcr *FluentClientRequest) QueryValues(k string, values ...string) *FluentClientRequest {
+	fcr.cfg.setQueryValues(k, values...)
 	return fcr
 }
 
@@ -893,7 +1111,7 @@ func cloneMapStrSlice(h map[string][]string) map[string][]string {
 	return h2
 }
 
-func (cfg *sharedConfig) addQueries(v url.Values) {
+func (cfg *sharedConfig) setQueries(v url.Values) {
 	if len(v) == 0 {
 		return
 	}
@@ -915,20 +1133,43 @@ func (cfg *sharedConfig) addQueries(v url.Values) {
 	}
 }
 
-func (clientOpts) AddQueries(v url.Values) ClientOption {
+// SetQueries takes all key-value pairs from a query-set and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the query-set.
+//
+// To completely replace all pairs regardless of overlap, use Query()
+func (clientOpts) SetQueries(v url.Values) ClientOption {
+	if len(v) == 0 {
+		return func(*clientConfig) {}
+	}
+
 	return func(cfg *clientConfig) {
-		cfg.addQueries(v)
+		cfg.setQueries(v)
 	}
 }
 
-func (reqOpts) AddQueries(v url.Values) ReqOption {
+// SetQueries takes all key-value pairs from a query-set and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the query-set.
+//
+// To completely replace all pairs regardless of overlap, use Query()
+func (reqOpts) SetQueries(v url.Values) ReqOption {
+	if len(v) == 0 {
+		return func(*reqConfig) {}
+	}
+
 	return func(cfg *reqConfig) {
-		cfg.addQueries(v)
+		cfg.setQueries(v)
 	}
 }
 
-func (fcr *FluentClientRequest) AddQueries(v url.Values) *FluentClientRequest {
-	fcr.cfg.addQueries(v)
+// SetQueries takes all key-value pairs from a query-set and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the query-set.
+//
+// To completely replace all pairs regardless of overlap, use Query()
+func (fcr *FluentClientRequest) SetQueries(v url.Values) *FluentClientRequest {
+	fcr.cfg.setQueries(v)
 	return fcr
 }
 

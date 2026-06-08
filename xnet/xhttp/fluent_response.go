@@ -31,7 +31,7 @@ func (fr *FluentResponse) LoggerFactory(logf xslog.LoggerFactory) *FluentRespons
 
 // StatusCode should be used to convey standard non-error responses and not to
 // construct error messages or messages in general with error status codes. To
-// construct error messages instead see NewErrResp.
+// construct error messages instead see NewErrResp and NewInternalErrResp.
 //
 // This function panics if the status code value is less than zero.
 //
@@ -66,13 +66,17 @@ func (fr *FluentResponse) ReaderBody(r io.Reader) *FluentResponse {
 	return fr
 }
 
-func (fr *FluentResponse) Headers(h http.Header) *FluentResponse {
+// Header destructively sets the http header contents
+//
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetHeaders()
+func (fr *FluentResponse) Header(h http.Header) *FluentResponse {
 	// note, std sdk will handle a nil http.Header value properly
 	fr.header = h.Clone()
 	return fr
 }
 
-func (fr *FluentResponse) SetHeader(k, v string) *FluentResponse {
+func (fr *FluentResponse) HeaderValue(k, v string) *FluentResponse {
 	if fr.header == nil {
 		fr.header = http.Header{}
 	}
@@ -81,7 +85,21 @@ func (fr *FluentResponse) SetHeader(k, v string) *FluentResponse {
 	return fr
 }
 
-func (fr *FluentResponse) AddHeader(k, v string) *FluentResponse {
+func (fr *FluentResponse) HeaderValues(k string, values ...string) *FluentResponse {
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
+	if fr.header == nil {
+		fr.header = http.Header{}
+	}
+
+	v := make([]string, len(values))
+	copy(v, values)
+
+	fr.header[k] = v
+	return fr
+}
+
+func (fr *FluentResponse) AddHeaderValue(k, v string) *FluentResponse {
 	if fr.header == nil {
 		fr.header = http.Header{}
 	}
@@ -90,18 +108,40 @@ func (fr *FluentResponse) AddHeader(k, v string) *FluentResponse {
 	return fr
 }
 
-func (fr *FluentResponse) AddHeaders(k string, values ...string) *FluentResponse {
-	k = textproto.CanonicalMIMEHeaderKey(k)
-
+func (fr *FluentResponse) AddHeaderValues(k string, values ...string) *FluentResponse {
 	if len(values) == 0 {
 		return fr
 	}
+
+	k = textproto.CanonicalMIMEHeaderKey(k)
 
 	if fr.header == nil {
 		fr.header = http.Header{}
 	}
 
 	fr.header[k] = append(fr.header[k], values...)
+	return fr
+}
+
+// SetHeaders takes all key-value pairs from a header and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the header set.
+//
+// To completely replace all pairs regardless of overlap, use Header()
+func (fr *FluentResponse) SetHeaders(h http.Header) *FluentResponse {
+	if len(h) == 0 {
+		return fr
+	}
+
+	h = h.Clone()
+
+	if fr.header == nil {
+		fr.header = http.Header{}
+	}
+
+	for k, v := range h {
+		fr.header[k] = v
+	}
 	return fr
 }
 

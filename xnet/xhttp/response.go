@@ -29,13 +29,12 @@ var (
 )
 
 type ErrResponse struct {
-	factory       *ResponseFactory
-	cause         error
-	statusCode    int
-	errCode       string
-	devMsg        string
-	header        http.Header
-	cowDoneHeader bool
+	factory    *ResponseFactory
+	cause      error
+	statusCode int
+	errCode    string
+	devMsg     string
+	header     http.Header
 
 	withErrRespConfig
 }
@@ -177,8 +176,6 @@ func (er ErrResponse) Resp() Response {
 	header := er.header
 	if header == nil {
 		header = http.Header{}
-	} else if !er.cowDoneHeader {
-		header = header.Clone()
 	}
 
 	return Response{
@@ -478,10 +475,8 @@ func (resp Response) WriteResp(ctx context.Context, w http.ResponseWriter) {
 
 		header := w.Header()
 
-		if resp.header != nil {
-			for k, v := range resp.header {
-				header[k] = v
-			}
+		for k, v := range resp.header {
+			header[k] = v
 		}
 
 		w.WriteHeader(sc)
@@ -506,10 +501,8 @@ func (resp Response) WriteResp(ctx context.Context, w http.ResponseWriter) {
 
 		header := w.Header()
 
-		if resp.header != nil {
-			for k, v := range resp.header {
-				header[k] = v
-			}
+		for k, v := range resp.header {
+			header[k] = v
 		}
 
 		header.Set("Content-Type", "application/json")
@@ -543,10 +536,8 @@ func (resp Response) WriteResp(ctx context.Context, w http.ResponseWriter) {
 
 		header := w.Header()
 
-		if resp.header != nil {
-			for k, v := range resp.header {
-				header[k] = v
-			}
+		for k, v := range resp.header {
+			header[k] = v
 		}
 
 		w.WriteHeader(sc)
@@ -577,10 +568,8 @@ func (resp Response) WriteResp(ctx context.Context, w http.ResponseWriter) {
 
 		header := w.Header()
 
-		if resp.header != nil {
-			for k, v := range resp.header {
-				header[k] = v
-			}
+		for k, v := range resp.header {
+			header[k] = v
 		}
 
 		header.Set("Content-Length", strconv.Itoa(len(content)))

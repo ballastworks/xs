@@ -83,10 +83,6 @@ func (rf *ResponseFactory) NewErr(options ...ErrRespOption) ErrResponse {
 		f(&cfg)
 	}
 
-	if len(options) == 1 && cfg.cause != nil {
-
-	}
-
 	if cfg.statusCode == http.StatusInternalServerError {
 
 		if cfg.errCode == "" {
@@ -105,7 +101,6 @@ func (rf *ResponseFactory) NewErr(options ...ErrRespOption) ErrResponse {
 		cfg.errCode,
 		cfg.devMsg,
 		cfg.header,
-		cfg.cowDoneHeader,
 		cfg.withErrRespConfig,
 	}
 }

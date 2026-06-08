@@ -67,14 +67,39 @@ func (respOpts) ReaderBody(r io.Reader) RespOption {
 	}
 }
 
-func (respOpts) Headers(h http.Header) RespOption {
+// Header destructively sets the http header contents
+//
+// To add multiple sets of keys and values rather than completely overwrite the
+// contents use SetHeaders()
+func (respOpts) Header(h http.Header) RespOption {
 	return func(cfg *respConfig) {
 		// note, std sdk will handle a nil http.Header value properly
 		cfg.header = h.Clone()
 	}
 }
 
-func (respOpts) SetHeader(k, v string) RespOption {
+// SetHeaders takes all key-value pairs from a header and replaces only
+// the matching key-value pairs. If no match is found then the new key-value
+// pair is added to the header set.
+//
+// To completely replace all pairs regardless of overlap, use Header()
+func (respOpts) SetHeaders(h http.Header) RespOption {
+	if len(h) == 0 {
+		return func(*respConfig) {}
+	}
+
+	return func(cfg *respConfig) {
+		if cfg.header == nil {
+			cfg.header = http.Header{}
+		}
+
+		for k, v := range h.Clone() {
+			cfg.header[k] = v
+		}
+	}
+}
+
+func (respOpts) HeaderValue(k, v string) RespOption {
 	return func(cfg *respConfig) {
 		if cfg.header == nil {
 			cfg.header = http.Header{}
@@ -84,7 +109,23 @@ func (respOpts) SetHeader(k, v string) RespOption {
 	}
 }
 
-func (respOpts) AddHeader(k, v string) RespOption {
+func (respOpts) HeaderValues(k string, values ...string) RespOption {
+	k = textproto.CanonicalMIMEHeaderKey(k)
+
+	return func(cfg *respConfig) {
+
+		v := make([]string, len(values))
+		copy(v, values)
+
+		if cfg.header == nil {
+			cfg.header = http.Header{}
+		}
+
+		cfg.header[k] = v
+	}
+}
+
+func (respOpts) AddHeaderValue(k, v string) RespOption {
 	return func(cfg *respConfig) {
 
 		if cfg.header == nil {
@@ -95,15 +136,14 @@ func (respOpts) AddHeader(k, v string) RespOption {
 	}
 }
 
-func (respOpts) AddHeaders(k string, values ...string) RespOption {
+func (respOpts) AddHeaderValues(k string, values ...string) RespOption {
+	if len(values) == 0 {
+		return func(*respConfig) {}
+	}
 
 	k = textproto.CanonicalMIMEHeaderKey(k)
 
 	return func(cfg *respConfig) {
-
-		if len(values) == 0 {
-			return
-		}
 
 		if cfg.header == nil {
 			cfg.header = http.Header{}
@@ -115,7 +155,7 @@ func (respOpts) AddHeaders(k string, values ...string) RespOption {
 
 // StatusCode should be used to convey standard non-error responses and not to
 // construct error messages or messages in general with error status codes. To
-// construct error messages instead see NewErrResp.
+// construct error messages instead see NewErrResp and NewInternalErrResp.
 //
 // This function panics if the status code value is less than zero.
 //
