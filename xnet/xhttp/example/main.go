@@ -365,190 +365,192 @@ type nopShutdownMetricExporter struct {
 func (nopShutdownMetricExporter) Shutdown(context.Context) error { return nil }
 
 func main() {
-	xcontext.WithRootShutdownSignalContext(func(ctx context.Context, cancel context.CancelCauseFunc, setRCLogger func(xslog.Logger)) {
-		logger, err := xslog.NewEnvLogger()
+	xcontext.WithRootShutdownSignalContext(rcMain)
+}
+
+func rcMain(ctx context.Context, cancel context.CancelCauseFunc, setRCLogger func(xslog.Logger)) {
+	logger, err := xslog.NewEnvLogger()
+	if err != nil {
+		panic(err)
+	}
+	setRCLogger(logger)
+	logf := xslog.StaticFactory(logger)
+	xslog.SetDefaultFactory(logf)
+
+	//
+	// setup tracer
+	//
+
+	if teardownOTEL := setupOTEL(ctx, logger); teardownOTEL != nil {
+		defer teardownOTEL()
+	}
+
+	//
+	// create a new main tracer
+	// and perform more setup within a "setup" span
+	//
+
+	tracer := otel.Tracer("main")
+
+	var srv *xhttp.Server
+	{
+		ctx, span := tracer.Start(ctx, "setup")
+		defer span.End()
+		_ = ctx // TODO: remove this line if ctx is used in setup steps below in the future, otherwise it remains as a defensive measure for tracing context properly.
+
+		var reqLogf xslog.LoggerFactory
+		{
+			op := xhttp.RequestLoggerFactoryOpts()
+
+			v, err := xhttp.NewRequestLoggerFactory(
+				op.LoggerFactory(logf),
+				op.CacheLogger(true),
+				op.TrackWrites(true), // TrackWrites is required for the correlation logger
+				// op.RecordPotentialGatewayPII(true),
+			)
+			if err != nil {
+				panic(err)
+			}
+
+			reqLogf = v
+		}
+		xhttp.SetDefaultLoggerFactory(reqLogf)
+
+		// The default logger factory implementation repeatedly resolves the default global logger via atomic reads. Setting the implementation with a specific logger instance here removes those atomic reads.
+		respf, err := xhttp.NewResponseFactory(
+			xhttp.ResponseFactoryOpts().LoggerFactory(reqLogf),
+		)
+		if err != nil {
+			logger.WithErr(ctx, err).Error(ctx, "failed to create a new default response factory")
+			panic(err)
+		}
+		xhttp.SetDefaultResponseFactory(respf)
+
+		//
+		// Load default options
+		//
+
+		listenHost := "127.0.0.1"
+		listenPort := "8080"
+
+		if s, ok := os.LookupEnv("LISTEN_HOST"); ok {
+			listenHost = s
+		}
+
+		if s, ok := os.LookupEnv("LISTEN_PORT"); ok {
+			var v string
+			n, err := strconv.ParseUint(s, 10, 16)
+			if err == nil {
+				v = strconv.Itoa(int(n))
+			}
+			if err != nil || v != s {
+				logger.WithErr(ctx, err).Error(ctx, "failed to parse listen port")
+				panic(err)
+			}
+
+			listenPort = v
+		}
+
+		//
+		// Setup Router
+		//
+
+		op := xhttp.RouterOpts()
+		rt, err := xhttp.NewRouter(
+			op.LoggerFactory(reqLogf),
+			op.IgnoreTrailingSlash(true),
+		)
 		if err != nil {
 			panic(err)
 		}
-		setRCLogger(logger)
-		logf := xslog.StaticFactory(logger)
-		xslog.SetDefaultFactory(logf)
 
-		//
-		// setup tracer
-		//
+		alwaysOKHandler := xhttp.NewFluentResp().
+			JsonBody(json.RawMessage(`{"status":"ok"}`)).
+			StaticHandler()
 
-		if teardownOTEL := setupOTEL(ctx, logger); teardownOTEL != nil {
-			defer teardownOTEL()
-		}
+		rt.Get("/", alwaysOKHandler)
 
-		//
-		// create a new main tracer
-		// and perform more setup within a "setup" span
-		//
-
-		tracer := otel.Tracer("main")
-
-		var srv *xhttp.Server
 		{
-			ctx, span := tracer.Start(ctx, "setup")
-			defer span.End()
-			_ = ctx // TODO: remove this line if ctx is used in setup steps below in the future, otherwise it remains as a defensive measure for tracing context properly.
+			ErrErrorEndpointError := errors.New("error endpoint always fails")
 
-			var reqLogf xslog.LoggerFactory
-			{
-				op := xhttp.RequestLoggerFactoryOpts()
+			rt.GetE("/error", func(w http.ResponseWriter, r *http.Request) error {
+				// logger := xplog.ProtoLogger(r)
+				// logger.Error("foo")
+				// logger.Error("bar")
 
-				v, err := xhttp.NewRequestLoggerFactory(
-					op.LoggerFactory(logf),
-					op.CacheLogger(true),
-					op.TrackWrites(true), // TrackWrites is required for the correlation logger
-					// op.RecordPotentialGatewayPII(true),
-				)
-				if err != nil {
-					panic(err)
-				}
+				ctx := r.Context()
 
-				reqLogf = v
-			}
-			xhttp.SetDefaultLoggerFactory(reqLogf)
+				logger := xplog.Logger(ctx)
+				logger.Error(ctx, "foo")
+				logger.Error(ctx, "bar")
 
-			// The default logger factory implementation repeatedly resolves the default global logger via atomic reads. Setting the implementation with a specific logger instance here removes those atomic reads.
-			respf, err := xhttp.NewResponseFactory(
-				xhttp.ResponseFactoryOpts().LoggerFactory(reqLogf),
-			)
-			if err != nil {
-				logger.WithErr(ctx, err).Error(ctx, "failed to create a new default response factory")
-				panic(err)
-			}
-			xhttp.SetDefaultResponseFactory(respf)
-
-			//
-			// Load default options
-			//
-
-			listenHost := "127.0.0.1"
-			listenPort := "8080"
-
-			if s, ok := os.LookupEnv("LISTEN_HOST"); ok {
-				listenHost = s
-			}
-
-			if s, ok := os.LookupEnv("LISTEN_PORT"); ok {
-				var v string
-				n, err := strconv.ParseUint(s, 10, 16)
-				if err == nil {
-					v = strconv.Itoa(int(n))
-				}
-				if err != nil || v != s {
-					logger.WithErr(ctx, err).Error(ctx, "failed to parse listen port")
-					panic(err)
-				}
-
-				listenPort = v
-			}
-
-			//
-			// Setup Router
-			//
-
-			op := xhttp.RouterOpts()
-			rt, err := xhttp.NewRouter(
-				op.LoggerFactory(reqLogf),
-				op.IgnoreTrailingSlash(true),
-			)
-			if err != nil {
-				panic(err)
-			}
-
-			alwaysOKHandler := xhttp.NewFluentResp().
-				JsonBody(json.RawMessage(`{"status":"ok"}`)).
-				StaticHandler()
-
-			rt.Get("/", alwaysOKHandler)
-
-			{
-				ErrErrorEndpointError := errors.New("error endpoint always fails")
-
-				rt.GetE("/error", func(w http.ResponseWriter, r *http.Request) error {
-					// logger := xplog.ProtoLogger(r)
-					// logger.Error("foo")
-					// logger.Error("bar")
-
-					ctx := r.Context()
-
-					logger := xplog.Logger(ctx)
-					logger.Error(ctx, "foo")
-					logger.Error(ctx, "bar")
-
-					return xerrors.WithStack(ErrErrorEndpointError)
-				})
-			}
-
-			// Service instance ready to start handling traffic probe handler.
-			//
-			// May sample upstream services to make sure they are healthy before
-			// returning a likely sticky success response.
-			//
-			// Ideally during startup critical external dependencies having
-			// issues would be checked and critical internals of this instance
-			// initialized as required for the service to fulfill its critical
-			// core functions. This would occur asynchronously of this handler
-			// or prior to the listener piping to the handler being opened such
-			// that the handler just checks some atomic indicator or status
-			// and returns. Once healthy it should likely remain sticky-healthy
-			// as externals from that point are not related to the readiness of
-			// the service but rather ongoing healthiness.
-			rt.Get("/readyz", alwaysOKHandler)
-
-			// Ongoing liveness probe handler.
-			//
-			// If this ever returns an error it's a strong signal for the
-			// orchestration layers to terminate the instance in most cases.
-			//
-			// This endpoint must not return a success status until the
-			// readiness probe has passed and is sticky-healthy. This endpoint
-			// must not convey failure of any upstream dependencies in any
-			// fashion unless the natures of those failures are guaranteed to
-			// be resolved by a termination of the container instance without
-			// exception. Ignoring this advice will lead to cascading failures
-			// when the orchestration layers treat a non-success or loss of
-			// signal as an indicator to terminate the container instance and
-			// replace it with another possibly on another host.
-			rt.Get("/healthz", alwaysOKHandler)
-
-			//
-			// Setup Server
-			//
-
-			srvOp := xhttp.SrvOpts()
-			srv, err = xhttp.NewServer(
-				srvOp.Server(&http.Server{
-					Addr:    net.JoinHostPort(listenHost, listenPort),
-					Handler: rt,
-				}),
-				srvOp.LoggerFactory(reqLogf),
-				// Enables correlation logger and more
-				srvOp.TraceMiddlewares(xhttp.EnrichedTraceMiddlewareChain()...),
-			)
-			if err != nil {
-				panic(err)
-			}
-
-			span.End()
+				return xerrors.WithStack(ErrErrorEndpointError)
+			})
 		}
 
+		// Service instance ready to start handling traffic probe handler.
 		//
-		// Run Server
+		// May sample upstream services to make sure they are healthy before
+		// returning a likely sticky success response.
+		//
+		// Ideally during startup critical external dependencies having
+		// issues would be checked and critical internals of this instance
+		// initialized as required for the service to fulfill its critical
+		// core functions. This would occur asynchronously of this handler
+		// or prior to the listener piping to the handler being opened such
+		// that the handler just checks some atomic indicator or status
+		// and returns. Once healthy it should likely remain sticky-healthy
+		// as externals from that point are not related to the readiness of
+		// the service but rather ongoing healthiness.
+		rt.Get("/readyz", alwaysOKHandler)
+
+		// Ongoing liveness probe handler.
+		//
+		// If this ever returns an error it's a strong signal for the
+		// orchestration layers to terminate the instance in most cases.
+		//
+		// This endpoint must not return a success status until the
+		// readiness probe has passed and is sticky-healthy. This endpoint
+		// must not convey failure of any upstream dependencies in any
+		// fashion unless the natures of those failures are guaranteed to
+		// be resolved by a termination of the container instance without
+		// exception. Ignoring this advice will lead to cascading failures
+		// when the orchestration layers treat a non-success or loss of
+		// signal as an indicator to terminate the container instance and
+		// replace it with another possibly on another host.
+		rt.Get("/healthz", alwaysOKHandler)
+
+		//
+		// Setup Server
 		//
 
-		// note: isolating the serveCTX and span to ensure that in traces, the ListenAndServe operation is clearly identifiable and not considered relevant for any child request contexts handled by the server instance.
-		serveCTX, span := tracer.Start(ctx, "listen_and_serve")
-		defer span.End()
-
-		if err := srv.ListenAndServe(ctx); err != nil {
-			logger.SpanFail(serveCTX, err, "listen and serve error")
+		srvOp := xhttp.SrvOpts()
+		srv, err = xhttp.NewServer(
+			srvOp.Server(&http.Server{
+				Addr:    net.JoinHostPort(listenHost, listenPort),
+				Handler: rt,
+			}),
+			srvOp.LoggerFactory(reqLogf),
+			// Enables correlation logger and more
+			srvOp.TraceMiddlewares(xhttp.EnrichedTraceMiddlewareChain()...),
+		)
+		if err != nil {
 			panic(err)
 		}
-	})
+
+		span.End()
+	}
+
+	//
+	// Run Server
+	//
+
+	// note: isolating the serveCTX and span to ensure that in traces, the ListenAndServe operation is clearly identifiable and not considered relevant for any child request contexts handled by the server instance.
+	serveCTX, span := tracer.Start(ctx, "listen_and_serve")
+	defer span.End()
+
+	if err := srv.ListenAndServe(ctx); err != nil {
+		logger.SpanFail(serveCTX, err, "listen and serve error")
+		panic(err)
+	}
 }
