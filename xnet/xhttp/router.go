@@ -11,8 +11,6 @@ import (
 	"github.com/ballastworks/xs/xcontext/xspan"
 	"github.com/ballastworks/xs/xerrors"
 	"github.com/ballastworks/xs/xlog/xslog"
-
-	"github.com/julienschmidt/httprouter"
 )
 
 var (
@@ -36,15 +34,97 @@ type Router interface {
 	ServeHTTP(w http.ResponseWriter, r *http.Request)
 }
 
-func newDefaultRouter() *httprouter.Router {
-	r := httprouter.New()
+func newDefaultRouter() *defaultRouter {
+	rt := &defaultRouter{
+		mux: http.NewServeMux(),
+		registeredRoutePaths: map[string]struct{}{
+			"/": {},
+		},
+		NotFound:         routerNotFoundHandler,
+		MethodNotAllowed: routerMethodNotAllowedHandler,
+	}
 
-	r.NotFound = routerNotFoundHandler
-	r.MethodNotAllowed = routerMethodNotAllowedHandler
-	r.RedirectTrailingSlash = false
-	r.RedirectFixedPath = false
+	// A method-less subtree pattern at the root sits at the bottom of
+	// ServeMux's precedence order: it matches any request that no registered
+	// route claimed, which is the Not Found case. Anything more specific
+	// (a real route, or a method-less per-path fallback) takes precedence.
+	rt.mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rt.NotFound.ServeHTTP(w, r)
+	}))
 
-	return r
+	return rt
+}
+
+// defaultRouter is the standard-library backed Router used when the caller does
+// not supply their own. It wraps net/http's ServeMux while preserving the
+// behaviors the xhttp router relies on: exact-match routing (no implicit
+// subtree/catch-all on trailing slashes), customizable Not Found / Method Not
+// Allowed responses, and a panic handler.
+//
+// Routing is delegated entirely to the ServeMux. For each registered path we
+// also register a method-less pattern as an "all other methods" fallback: by
+// ServeMux precedence a method-specific pattern (e.g. "GET /foo") matches a
+// strict subset of the method-less one ("/foo") and therefore wins for that
+// method, while the method-less pattern catches every other method on that
+// path and renders the Method Not Allowed response.
+type defaultRouter struct {
+	mux                  *http.ServeMux
+	registeredRoutePaths map[string]struct{}
+
+	NotFound         http.Handler
+	MethodNotAllowed http.Handler
+	PanicHandler     func(w http.ResponseWriter, r *http.Request, rec any)
+}
+
+func (rt *defaultRouter) Handler(method string, pattern string, handler http.Handler) {
+	if rt.registeredRoutePaths == nil {
+		// freeze() has run: the router has started serving. http.ServeMux does
+		// not support registration concurrent with serving, so refuse it loudly
+		// rather than racing or half-registering a route.
+		panic("xhttp: route registered after the router started serving")
+	}
+
+	rt.mux.Handle(method+" "+pattern, handler)
+
+	// Register the "all other methods" fallback for this path exactly once.
+	// ServeMux panics on a duplicate pattern registration, so a path shared by
+	// multiple methods (e.g. GET and POST on "/foo") must only add it once.
+	if _, ok := rt.registeredRoutePaths[pattern]; !ok {
+		rt.registeredRoutePaths[pattern] = struct{}{}
+		rt.mux.Handle(pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rt.MethodNotAllowed.ServeHTTP(w, r)
+		}))
+	}
+}
+
+func (rt *defaultRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if rt.PanicHandler != nil {
+		defer func() {
+			if rec := recover(); rec != nil {
+				rt.PanicHandler(w, r, rec)
+			}
+		}()
+	}
+
+	rt.mux.ServeHTTP(w, r)
+}
+
+// servePreflightChecker is implemented by a server handler that wants to run a
+// final check immediately before the server begins serving. The server invokes
+// ServePreflightCheck at ListenAndServe time; returning a non-nil error aborts
+// startup. Implementations may also use this call as the signal that serving is
+// about to begin (for example, to release registration-time state).
+type servePreflightChecker interface {
+	ServePreflightCheck(ctx context.Context) error
+}
+
+// ServePreflightCheck releases the registration-time dedup set. It runs when
+// the server begins serving (see Server.listenAndServe), at which point the
+// route table is complete and the set is dead weight. Releasing it here also
+// turns any later Handler call into a clear panic. It never reports an error.
+func (rt *defaultRouter) ServePreflightCheck(ctx context.Context) error {
+	rt.registeredRoutePaths = nil
+	return nil
 }
 
 type router struct {
@@ -85,11 +165,11 @@ func NewRouter(options ...RouterOption) (*router, error) {
 	// inject panic handler
 	if !cfg.routerIsSet {
 		// Used newDefaultRouter() to set the wrappedRouter implementation
-		// which is a non-nil *httprouter.Router instance. So going to set
-		// the PanicHandler on that instance directly from our upper layer
+		// which is a non-nil *defaultRouter instance. So going to set the
+		// PanicHandler on that instance directly from our upper layer
 		// default.
 		if !cfg.panicHandlerIsSet {
-			rt.wrappedRouter.(*httprouter.Router).PanicHandler = rt.defaultPanicHandler
+			rt.wrappedRouter.(*defaultRouter).PanicHandler = rt.defaultPanicHandler
 		}
 	} else {
 		next := handler
@@ -118,9 +198,8 @@ func NewRouter(options ...RouterOption) (*router, error) {
 }
 
 func (rt *router) Handler(method string, path string, handler http.Handler) {
-	rt.wrappedRouter.Handler(method, path, handler)
-
 	if !rt.ignoreTrailingSlash {
+		rt.wrappedRouter.Handler(method, path, handler)
 		return
 	}
 
@@ -129,12 +208,18 @@ func (rt *router) Handler(method string, path string, handler http.Handler) {
 		for i := len(path) - 1; i >= 0; i-- {
 			if path[i] != '/' {
 				rt.wrappedRouter.Handler(method, path[:i+1], handler)
+				rt.wrappedRouter.Handler(method, path[:i+2]+"{$}", handler)
 				return
 			}
 		}
-	} else {
-		// just add slash to path and register
-		rt.wrappedRouter.Handler(method, path+"/", handler)
+
+		rt.wrappedRouter.Handler(method, "/{$}", handler)
+		return
+	}
+
+	rt.wrappedRouter.Handler(method, path, handler)
+	if !strings.HasSuffix(path, "/{$}") {
+		rt.wrappedRouter.Handler(method, path+"/{$}", handler)
 	}
 }
 
@@ -261,6 +346,16 @@ func (rt *router) TraceE(path string, handler errHandlerFunc) {
 
 func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rt.handler.ServeHTTP(w, r)
+}
+
+// ServePreflightCheck forwards to the wrapped router if it implements a
+// pre-serve check (such as the default router releasing registration-time
+// state). Any error it reports aborts server startup.
+func (rt *router) ServePreflightCheck(ctx context.Context) error {
+	if c, ok := rt.wrappedRouter.(servePreflightChecker); ok {
+		return c.ServePreflightCheck(ctx)
+	}
+	return nil
 }
 
 // // TODO: turn into a RouterOption

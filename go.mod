@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	github.com/josephcopenhaver/tbdd-go v1.2.2
-	github.com/julienschmidt/httprouter v1.3.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/contrib/instrumentation/host v0.64.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace v0.46.1

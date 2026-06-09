@@ -33,8 +33,9 @@ var (
 	//
 	// specific errors
 	//
-	ErrListenAndServePanic      = errors.New("panic in ListenAndServe")
-	ErrShutdownDeadlineExceeded = &errShutdownDeadlineExceeded{}
+	ErrListenAndServePanic       = errors.New("panic in ListenAndServe")
+	ErrServePreflightCheckFailed = errors.New("serve preflight check failed")
+	ErrShutdownDeadlineExceeded  = &errShutdownDeadlineExceeded{}
 )
 
 // errShutdownDeadlineExceeded is a context.DeadlineExceeded error type
@@ -60,6 +61,7 @@ type Server struct {
 	shutdownTimeout             time.Duration
 	requestShedder              RequestShedder
 	server                      *http.Server
+	rootHandler                 http.Handler
 	shedRequestsOnShutdown      bool
 	disableKeepAlivesOnShutdown bool
 }
@@ -166,6 +168,7 @@ func newServer(cfg srvConfig) (*Server, error) {
 
 	hs := cfg.server
 	handler := hs.Handler
+	rootHandler := handler // the caller's handler, before any middleware wrapping
 	logf := cfg.logf
 
 	// decorate the server handler with the "before handler middlewares" that
@@ -201,6 +204,7 @@ func newServer(cfg srvConfig) (*Server, error) {
 		cfg.shutdownTimeout,
 		rs,
 		hs,
+		rootHandler,
 		cfg.shedRequestsOnShutdown,
 		cfg.disableKeepAlivesOnShutdown,
 	}, nil
@@ -368,6 +372,18 @@ func (srv *Server) listenAndServe(ctx context.Context, logger xslog.Logger) erro
 
 		logger.WithErr(ctx, err).Error(ctx, badSrvConfEvt)
 		return errors.Join(ErrBadSrvConfig, err)
+	}
+
+	// Serving is about to begin. Give the handler a chance to run a final
+	// preflight check and to release any registration-time state (e.g. the
+	// default router's dedup set, after which registering more routes panics).
+	// A non-nil result aborts startup.
+	if c, ok := srv.rootHandler.(servePreflightChecker); ok {
+		if err := c.ServePreflightCheck(ctx); err != nil {
+			err = errors.Join(ErrServePreflightCheckFailed, err)
+			logger.WithErr(ctx, err).Error(ctx, "serve preflight check failed")
+			return err
+		}
 	}
 
 	var addr string
