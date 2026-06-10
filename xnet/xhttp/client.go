@@ -1420,9 +1420,11 @@ func (c *Client) Do(ctx context.Context, options ...ReqOption) (*ClientResponse,
 // It also guarantees that the response body is closed before the calling context resumes.
 func (fcr *FluentClientRequest) Do(ctx context.Context) (*ClientResponse, error) {
 	const autoCloseRespBody = true
+	const firstNilOptIndex = -1
 
 	fcr.closed = true
-	_, resp, err := fcr.c.do(ctx, autoCloseRespBody) // TODO: ensure nil options slice does not add allocations
+	rr := newReqRunner(fcr.c, &fcr.cfg, autoCloseRespBody)
+	_, resp, err := rr.run(ctx, firstNilOptIndex)
 	return resp, err
 }
 
@@ -1441,9 +1443,11 @@ func (c *Client) DoStandard(ctx context.Context, options ...ReqOption) (*http.Re
 // Typically Do should be called instead of this function.
 func (fcr *FluentClientRequest) DoStandard(ctx context.Context) (*http.Response, error) {
 	const autoCloseRespBody = false
+	const firstNilOptIndex = -1
 
 	fcr.closed = true
-	stdResp, _, err := fcr.c.do(ctx, autoCloseRespBody) // TODO: ensure nil options slice does not add allocations
+	rr := newReqRunner(fcr.c, &fcr.cfg, autoCloseRespBody)
+	stdResp, _, err := rr.run(ctx, firstNilOptIndex)
 	return stdResp, err
 }
 
