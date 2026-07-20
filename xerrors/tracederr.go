@@ -129,7 +129,7 @@ func traceSize(trace []uintptr) int {
 		break
 	}
 
-	return int(sum)
+	return sum
 }
 
 func appendTrace(p []byte, trace []uintptr) []byte {
