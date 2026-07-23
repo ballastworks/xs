@@ -27,6 +27,8 @@ import (
 
 var (
 	ErrEmptyJSONRequestBody = errors.New("empty json request body")
+	ErrStaticAuthFailed     = errors.New("static auth strategy failed")
+	ErrAddAuthFailed        = errors.New("adding auth to request failed")
 	errBadPath              = errors.New("bad request path")
 )
 
@@ -78,6 +80,7 @@ type reqRunner struct {
 
 	firstErrResp firstErrResponse
 
+	errAuthPreDo error
 	errDo        error
 	errReadBody  error
 	errUnmarshal error
@@ -195,7 +198,7 @@ func (rr *reqRunner) run(ctx context.Context, firstNilOptIndex int) (_stdResp *h
 			}
 
 			// fallthrough to error case
-		} else if rr.hasErrStatusCode || rr.errReadBody != nil || rr.errRetry != nil || rr.errUnmarshal != nil {
+		} else if rr.errAuthPreDo != nil || rr.hasErrStatusCode || rr.errReadBody != nil || rr.errRetry != nil || rr.errUnmarshal != nil {
 
 			// do nothing - fallthrough to error case
 		} else {
@@ -522,7 +525,12 @@ func (rr *reqRunner) buildRequest(ctx context.Context) error {
 	rr.authAdder = rr.cfg.authAdder
 	if rr.authAdder != nil {
 		if staticStratCheck, ok := rr.authAdder.(AuthAdderStrategyDescriber); ok && staticStratCheck.IsAddAuthToHttpRequestStrategyStatic() {
-			rr.req = rr.authAdder.AddAuthToHttpRequest(rr.req)
+			authedReq, err := rr.authAdder.AddAuthToHttpRequest(rr.req)
+			if err != nil {
+				return errors.Join(ErrStaticAuthFailed, err)
+			}
+
+			rr.req = authedReq
 			rr.authAdder = nil
 		}
 	}
@@ -600,6 +608,11 @@ func (rr *reqRunner) isIdempotentReq() bool {
 
 func (rr *reqRunner) retryReq() bool {
 	rr.refreshAuth = false
+
+	if rr.errAuthPreDo != nil && rr.authRefresher != nil {
+		rr.refreshAuth = true
+		return true
+	}
 
 	if err := rr.errDo; err != nil && canRetryConnErr(err) {
 		return true
@@ -706,7 +719,7 @@ func (rr *reqRunner) doWithRetries(ctx context.Context, reqSpanName string) {
 		}
 
 		// prepare new body reader
-		{
+		if rr.errAuthPreDo == nil {
 			// note that this is intentionally not done before sleeping the delay time
 			// not only because then we don't need to recompute the delay time, but because
 			// the implementation of GetBody could vary wildly and the body returned could have
@@ -739,6 +752,7 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 	ctx, cancel := context.WithDeadline(ctx, now.Add(rr.cfg.perCallTimeout))
 	defer cancel()
 
+	rr.errAuthPreDo = nil
 	rr.errDo = nil
 	rr.hasErrStatusCode = false
 	rr.errReadBody = nil
@@ -768,7 +782,12 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 
 	nextReq := rr.req
 	if rr.authAdder != nil {
-		nextReq = rr.authAdder.AddAuthToHttpRequest(nextReq)
+		authedReq, err := rr.authAdder.AddAuthToHttpRequest(nextReq)
+		if err != nil {
+			rr.errAuthPreDo = errors.Join(ErrAddAuthFailed, err)
+		} else {
+			nextReq = authedReq
+		}
 	}
 
 	spanOptsBuf := [...]trace.SpanStartOption{
@@ -804,16 +823,34 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 		span.End()
 	}()
 
+	if err := rr.errAuthPreDo; err != nil {
+		rr.respBodyClosed = true
+		rr.resp.r = nil
+
+		const errMsg = "preflight auth error"
+		xspan.RecordError(ctx, err, errMsg)
+
+		span.SetStatus(codes.Error, errMsg)
+		spanEnded = true
+		span.End()
+		return
+	}
+
 	nextReq = nextReq.WithContext(ctx)
 	hClient := rr.c.cfg.httpClient
 
 	if err := xcontext.Cause(ctx); err != nil {
 		rr.respBodyClosed = true
 		rr.resp.r = nil
+
+		const errMsg = "request timeout"
 		// TODO: wrap err in additional detail around deadline?
-		xspan.RecordError(ctx, err, "context canceled")
+		xspan.RecordError(ctx, err, errMsg)
 
 		rr.errDo = err
+		span.SetStatus(codes.Error, errMsg)
+		spanEnded = true
+		span.End()
 		return
 	}
 
@@ -824,8 +861,9 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 	if rr.errDo != nil {
 		rr.resp.r = nil
 
-		xspan.RecordError(ctx, rr.errDo, "connection or protocol error")
-		span.SetStatus(codes.Error, "connection or protocol error")
+		const errMsg = "connection or protocol error"
+		xspan.RecordError(ctx, rr.errDo, errMsg)
+		span.SetStatus(codes.Error, errMsg)
 		spanEnded = true
 		span.End()
 		return
@@ -939,6 +977,7 @@ func (rr *reqRunner) doOnce(ctx context.Context, reqSpanName string, now time.Ti
 	ctx, cancel := context.WithDeadline(ctx, now.Add(rr.cfg.perCallTimeout))
 	defer cancel()
 
+	rr.errAuthPreDo = nil
 	rr.errDo = nil
 	rr.hasErrStatusCode = false
 	rr.errReadBody = nil
@@ -968,7 +1007,12 @@ func (rr *reqRunner) doOnce(ctx context.Context, reqSpanName string, now time.Ti
 
 	nextReq := rr.req
 	if rr.authAdder != nil {
-		nextReq = rr.authAdder.AddAuthToHttpRequest(nextReq)
+		authedReq, err := rr.authAdder.AddAuthToHttpRequest(nextReq)
+		if err != nil {
+			rr.errAuthPreDo = errors.Join(ErrAddAuthFailed, err)
+		} else {
+			nextReq = authedReq
+		}
 	}
 
 	spanOptsBuf := [...]trace.SpanStartOption{
@@ -991,14 +1035,27 @@ func (rr *reqRunner) doOnce(ctx context.Context, reqSpanName string, now time.Ti
 		span.End()
 	}()
 
+	if err := rr.errAuthPreDo; err != nil {
+		const errMsg = "preflight auth error"
+		xspan.RecordError(ctx, err, errMsg)
+		span.SetStatus(codes.Error, errMsg)
+		spanEnded = true
+		span.End()
+		return
+	}
+
 	nextReq = nextReq.WithContext(ctx)
 	hClient := rr.c.cfg.httpClient
 
 	if err := xcontext.Cause(ctx); err != nil {
 		rr.respBodyClosed = true
 		rr.resp.r = nil
+		const errMsg = "request timeout"
 		// TODO: wrap err in additional detail around deadline?
-		xspan.RecordError(ctx, err, "context canceled")
+		xspan.RecordError(ctx, err, errMsg)
+		span.SetStatus(codes.Error, errMsg)
+		spanEnded = true
+		span.End()
 
 		rr.errDo = err
 		return
@@ -1219,14 +1276,16 @@ func (rr *reqRunner) finalize(rPtr **http.Response, crPtr **ClientResponse, errP
 			r.GetBody = nil
 		}
 
-		if r := rr.resp.r.Request; r != nil {
-			if b := r.Body; b != nil {
-				r.Body = nil
+		if r := rr.resp.r; r != nil {
+			if r := r.Request; r != nil {
+				if b := r.Body; b != nil {
+					r.Body = nil
 
-				xi_io.ReleaseNopCloser(b)
+					xi_io.ReleaseNopCloser(b)
+				}
+
+				r.GetBody = nil
 			}
-
-			r.GetBody = nil
 		}
 
 		v.Release()
@@ -1263,6 +1322,10 @@ func (rr *reqRunner) finalize(rPtr **http.Response, crPtr **ClientResponse, errP
 
 	var prevErrCount uint8
 
+	if rr.errAuthPreDo != nil {
+		prevErrCount++
+	}
+
 	if rr.errDo != nil {
 		prevErrCount++
 	}
@@ -1287,6 +1350,10 @@ func (rr *reqRunner) finalize(rPtr **http.Response, crPtr **ClientResponse, errP
 	rr.numTeardownErrs += prevErrCount
 
 	var i uint8
+	if err := rr.errAuthPreDo; err != nil {
+		rr.teardownErrs[i] = err
+		i++
+	}
 	if err := rr.errDo; err != nil {
 		rr.teardownErrs[i] = err
 		i++

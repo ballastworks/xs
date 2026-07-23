@@ -54,7 +54,7 @@ type AuthAdder interface {
 	// (it does not call .Clone() before invoking and the context set in the request is the same context used when Do is called on the http client)
 	//
 	// This function must preserve the context or maintain a full parent-child context relationship to the context within the input.
-	AddAuthToHttpRequest(*http.Request) *http.Request
+	AddAuthToHttpRequest(*http.Request) (*http.Request, error)
 
 	authRefresher
 }
@@ -79,15 +79,15 @@ type AuthAdderStrategyDescriber interface {
 //
 // safety depends on the implementation of the authFunc value
 type authMediator struct {
-	wrapRequest      func(*http.Request) *http.Request
+	wrapRequest      func(*http.Request) (*http.Request, error)
 	isStrategyStatic bool
 }
 
-func newAuthMediator(wrapRequest func(*http.Request) *http.Request, isStrategyStatic bool) *authMediator {
+func newAuthMediator(wrapRequest func(*http.Request) (*http.Request, error), isStrategyStatic bool) *authMediator {
 	return &authMediator{wrapRequest, isStrategyStatic}
 }
 
-func (am *authMediator) AddAuthToHttpRequest(r *http.Request) *http.Request {
+func (am *authMediator) AddAuthToHttpRequest(r *http.Request) (*http.Request, error) {
 	return am.wrapRequest(r)
 }
 
@@ -112,7 +112,7 @@ func (am *authMediator) IsHttpReqAuthRefresherEnabled() bool {
 }
 
 type authAdderConfig struct {
-	wrapRequest      func(*http.Request) *http.Request
+	wrapRequest      func(*http.Request) (*http.Request, error)
 	isStrategyStatic bool
 }
 
@@ -124,7 +124,7 @@ func AuthAdderOpts() authAdderOpts {
 }
 
 type reqWrapper interface {
-	WrapRequest(*http.Request) *http.Request
+	WrapRequest(*http.Request) (*http.Request, error)
 }
 
 // StratAuthRequestWrapper is used to add authentication details to a http request and return the new *http.Request
@@ -162,7 +162,7 @@ func (authAdderOpts) StratAuthRequestWrapper(rw reqWrapper) AuthAdderOption {
 	}
 }
 
-func (authAdderOpts) StratAuthorizationHeaderFunc(f func() string) AuthAdderOption {
+func (authAdderOpts) StratAuthorizationHeaderFunc(f func() (string, error)) AuthAdderOption {
 	if f == nil {
 		return func(cfg *authAdderConfig) {
 			cfg.wrapRequest = nil
@@ -170,10 +170,13 @@ func (authAdderOpts) StratAuthorizationHeaderFunc(f func() string) AuthAdderOpti
 		}
 	}
 	return func(cfg *authAdderConfig) {
-		cfg.wrapRequest = func(r *http.Request) *http.Request {
-			secret := f()
+		cfg.wrapRequest = func(r *http.Request) (*http.Request, error) {
+			secret, err := f()
+			if err != nil {
+				return nil, err
+			}
 			setAuthorizationHeader(r, secret)
-			return r
+			return r, nil
 		}
 		cfg.isStrategyStatic = false
 	}
@@ -181,9 +184,9 @@ func (authAdderOpts) StratAuthorizationHeaderFunc(f func() string) AuthAdderOpti
 
 func (authAdderOpts) StratAuthorizationHeaderVal(authorizationHeaderVal string) AuthAdderOption {
 	return func(cfg *authAdderConfig) {
-		cfg.wrapRequest = func(r *http.Request) *http.Request {
+		cfg.wrapRequest = func(r *http.Request) (*http.Request, error) {
 			setAuthorizationHeader(r, authorizationHeaderVal)
-			return r
+			return r, nil
 		}
 		cfg.isStrategyStatic = true
 	}
