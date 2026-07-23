@@ -1592,7 +1592,7 @@ func (enr erroredNopReader) Read(p []byte) (int, error) {
 	}
 
 	n, err := enr.buf.Read(p)
-	if err != nil && errors.Is(err, io.EOF) {
+	if err != nil && enr.err != nil && errors.Is(err, io.EOF) {
 		err = enr.err
 	}
 

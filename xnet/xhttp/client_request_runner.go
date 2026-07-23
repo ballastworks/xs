@@ -687,35 +687,46 @@ func (rr *reqRunner) doWithRetries(ctx context.Context, reqSpanName string) {
 		//
 		// sleep for the delay duration or until the context is done
 		//
+		// a Retry-After response header can yield a zero delay which a ticker
+		// cannot represent, so skip sleeping but still honor cancellation
 
-		if ticker == nil {
-			ticker = time.NewTicker(delay)
+		if delay <= 0 {
+			if err := xcontext.Cause(ctx); err != nil {
+				rr.errRetry = err
+				rr.reqSpan.SetStatus(codes.Error, "parent context canceled before retry deadline")
+				rr.reqSpanStatSet = true
+				return
+			}
 		} else {
-			ticker.Reset(delay)
-		}
-		select {
-		case <-ticker.C:
-			ticker.Stop()
-
-			// next select ensures the ticker is drained
-			// should the timeout be very small
-			// and a value written before it could be stopped
-
-			// note: no need for a for loop here as .Stop() ensures that the ticker will not
-			// write to the channel again and since the channel buffer size is 1 there could
-			// only be one value written to the channel by the time stop returns.
-
+			if ticker == nil {
+				ticker = time.NewTicker(delay)
+			} else {
+				ticker.Reset(delay)
+			}
 			select {
 			case <-ticker.C:
-			default:
-			}
-		case <-ctx.Done():
-			ticker.Stop()
+				ticker.Stop()
 
-			rr.errRetry = xcontext.Cause(ctx)
-			rr.reqSpan.SetStatus(codes.Error, "parent context canceled before retry deadline")
-			rr.reqSpanStatSet = true
-			return
+				// next select ensures the ticker is drained
+				// should the timeout be very small
+				// and a value written before it could be stopped
+
+				// note: no need for a for loop here as .Stop() ensures that the ticker will not
+				// write to the channel again and since the channel buffer size is 1 there could
+				// only be one value written to the channel by the time stop returns.
+
+				select {
+				case <-ticker.C:
+				default:
+				}
+			case <-ctx.Done():
+				ticker.Stop()
+
+				rr.errRetry = xcontext.Cause(ctx)
+				rr.reqSpan.SetStatus(codes.Error, "parent context canceled before retry deadline")
+				rr.reqSpanStatSet = true
+				return
+			}
 		}
 
 		// prepare new body reader
