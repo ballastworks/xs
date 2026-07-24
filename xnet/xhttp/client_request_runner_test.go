@@ -412,15 +412,13 @@ func TestReqRunnerAuth(t *testing.T) {
 		),
 		tbdd.GWT(
 			TC{exp: expectations{
-				errIs:      []error{ErrAddAuthFailed, errTestAuthAdd},
-				respNil:    true,
-				add:        2,
-				addIsMin:   true,
-				refresh:    1,
-				refreshMin: true,
+				errIs:   []error{ErrAddAuthFailed, errTestAuthAdd},
+				respNil: true,
+				add:     2,
+				refresh: 1,
 			}},
 			// given
-			"a dynamic custom auth adder that errors persistently despite auth refreshes",
+			"a dynamic custom auth adder that errors persistently despite an auth refresh",
 			func(t *testing.T, tc *TC) {
 				tc.ts = newSetup()
 
@@ -432,14 +430,15 @@ func TestReqRunnerAuth(t *testing.T) {
 				}
 				tc.adder = tc.ta
 
+				// bounds the failure mode if refresh-once regresses into a loop
 				op := ReqOpts()
 				tc.opts = []ReqOption{op.RetryMaxTimeout(500 * time.Millisecond)}
 			},
 			// when
-			"the request is executed until the retry deadline",
+			"the request is executed",
 			whenF,
 			// then
-			"the add-auth error is returned, refreshes were attempted, and the server was never called",
+			"the add-auth error is terminal after exactly one refresh and the server was never called",
 			thenF,
 		),
 		tbdd.GWT(
@@ -487,13 +486,12 @@ func TestReqRunnerAuth(t *testing.T) {
 		),
 		tbdd.GWT(
 			TC{exp: expectations{
-				errIs:      []error{ErrAddAuthFailed, ErrRespStatusCodeNotSuccess},
-				status:     http.StatusUnauthorized,
-				rt:         1,
-				add:        2,
-				addIsMin:   true,
-				refresh:    1,
-				refreshMin: true,
+				errIs:   []error{ErrAddAuthFailed, ErrRespStatusCodeNotSuccess},
+				status:  http.StatusUnauthorized,
+				rt:      1,
+				add:     2,
+				refresh: 1,
+				tokens:  []string{"stale-tok"},
 			}},
 			// given
 			"a server that always responds 401 and an adder that errors after the auth refresh",
@@ -518,14 +516,15 @@ func TestReqRunnerAuth(t *testing.T) {
 				}
 				tc.adder = tc.ta
 
+				// bounds the failure mode if refresh-once regresses into a loop
 				op := ReqOpts()
 				tc.opts = []ReqOption{op.RetryMaxTimeout(500 * time.Millisecond)}
 			},
 			// when
-			"the request is executed until the retry deadline",
+			"the request is executed",
 			whenF,
 			// then
-			"the first 401 error response is returned along with the add-auth error",
+			"the first 401 error response is returned along with the add-auth error after exactly one refresh",
 			thenF,
 		),
 		tbdd.GWT(
@@ -565,6 +564,92 @@ func TestReqRunnerAuth(t *testing.T) {
 			whenF,
 			// then
 			"the first 401 error response wins over the refresh failure",
+			thenF,
+		),
+		tbdd.GWT(
+			TC{exp: expectations{
+				errIs:   []error{ErrRespStatusCodeNotSuccess},
+				status:  http.StatusUnauthorized,
+				rt:      2,
+				add:     2,
+				refresh: 1,
+				tokens:  []string{"stale-tok", "new-tok"},
+			}},
+			// given
+			"a server that rejects with a 401 even after a successful auth refresh and a generous retry deadline",
+			func(t *testing.T, tc *TC) {
+				tc.ts = newSetup()
+				tc.ts.SetHandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+				})
+
+				tc.ta = &testAuthAdder{
+					refresherEnabled: true,
+					add: func(_, refreshes int, r *http.Request) (*http.Request, error) {
+						tok := "stale-tok"
+						if refreshes > 0 {
+							tok = "new-tok"
+						}
+						r.Header.Set("Authorization", tok)
+						return r, nil
+					},
+					check: func(resp *http.Response, _ error) bool {
+						return resp != nil && resp.StatusCode == http.StatusUnauthorized
+					},
+				}
+				tc.adder = tc.ta
+
+				op := ReqOpts()
+				tc.opts = []ReqOption{op.RetryMaxTimeout(2 * time.Second)}
+			},
+			// when
+			"the request is executed",
+			whenF,
+			// then
+			"auth is refreshed exactly once and the second 401 is terminal long before the retry deadline",
+			thenF,
+		),
+		tbdd.GWT(
+			TC{exp: expectations{
+				errIs:   []error{ErrRespStatusCodeNotSuccess},
+				errNot:  []error{ErrAddAuthFailed},
+				status:  http.StatusUnauthorized,
+				rt:      1,
+				add:     2,
+				refresh: 1,
+				tokens:  []string{"fresh-tok"},
+			}},
+			// given
+			"an adder that errors until auth is refreshed and a server that rejects even the fresh token with a 401",
+			func(t *testing.T, tc *TC) {
+				tc.ts = newSetup()
+				tc.ts.SetHandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusUnauthorized)
+				})
+
+				tc.ta = &testAuthAdder{
+					refresherEnabled: true,
+					add: func(_, refreshes int, r *http.Request) (*http.Request, error) {
+						if refreshes == 0 {
+							return nil, errTestAuthAdd
+						}
+						r.Header.Set("Authorization", "fresh-tok")
+						return r, nil
+					},
+					check: func(resp *http.Response, _ error) bool {
+						return resp != nil && resp.StatusCode == http.StatusUnauthorized
+					},
+				}
+				tc.adder = tc.ta
+
+				op := ReqOpts()
+				tc.opts = []ReqOption{op.RetryMaxTimeout(2 * time.Second)}
+			},
+			// when
+			"the request is executed",
+			whenF,
+			// then
+			"the pre-request refresh consumes the once-per-request allowance so the 401 does not trigger another",
 			thenF,
 		),
 	}

@@ -110,6 +110,7 @@ type reqRunner struct {
 	reqIsIdempotentFlag    bool
 	reqIsIdempotentFlagSet bool
 	respBodyClosed         bool
+	reauthDone             bool
 }
 
 func newReqRunner(c *Client, cfg *reqConfig, autoCloseRespBody bool) *reqRunner {
@@ -609,7 +610,7 @@ func (rr *reqRunner) isIdempotentReq() bool {
 func (rr *reqRunner) retryReq() bool {
 	rr.refreshAuth = false
 
-	if rr.errAuthPreDo != nil && rr.authRefresher != nil {
+	if !rr.reauthDone && rr.errAuthPreDo != nil && rr.authRefresher != nil {
 		rr.refreshAuth = true
 		return true
 	}
@@ -626,8 +627,10 @@ func (rr *reqRunner) retryReq() bool {
 
 	if rr.canCheckAndRefreshAuth {
 		if err := rr.errDo; rr.authRefresher.CheckIsAuthRejectedHttpResp(rr.resp.r, err) {
-			rr.refreshAuth = true
-			return true
+			if !rr.reauthDone {
+				rr.refreshAuth = true
+			}
+			return rr.refreshAuth
 		}
 	}
 
@@ -788,6 +791,8 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 
 			rr.errDo = err
 			return
+		} else {
+			rr.reauthDone = true
 		}
 	}
 
