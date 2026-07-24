@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ballastworks/xs/xcontext"
 	"github.com/ballastworks/xs/xio"
 	"github.com/ballastworks/xs/xlog/xslog"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace"
@@ -94,11 +95,6 @@ func (e *errRetryDeadlineExceeded) Is(target error) bool {
 	return target == ErrRetryDeadlineExceeded
 }
 
-type contextWrapper interface {
-	WrapContext(context.Context) context.Context
-	CleanupWrappedContext()
-}
-
 // TODO: http 431 error responses in server impl - https://www.rfc-editor.org/rfc/rfc6585.html#section-5
 
 // Client should be initialized via NewClient()
@@ -126,10 +122,10 @@ type sharedConfig struct {
 }
 
 type clientConfig struct {
-	baseUrl        string
-	serviceName    string
-	middlewares    []RoundTripMiddleware
-	contextWrapper contextWrapper
+	baseUrl                string
+	serviceName            string
+	middlewares            []RoundTripMiddleware
+	contextWrapperProvider func() xcontext.Wrapper
 
 	sharedConfig
 
@@ -145,7 +141,9 @@ func ClientOpts() clientOpts {
 }
 
 type reqConfig struct {
-	contextWrapper  contextWrapper
+	clientContextWrapper xcontext.Wrapper
+
+	contextWrapper  xcontext.Wrapper
 	body            any
 	unmarshalJsonTo any
 	getBody         func() (io.ReadCloser, error)
@@ -268,19 +266,19 @@ func (clientOpts) Middlewares(m []RoundTripMiddleware) ClientOption {
 	}
 }
 
-func (clientOpts) ContextWrapper(cw contextWrapper) ClientOption {
+func (clientOpts) ContextWrapperProvider(cw func() xcontext.Wrapper) ClientOption {
 	return func(cfg *clientConfig) {
-		cfg.contextWrapper = cw
+		cfg.contextWrapperProvider = cw
 	}
 }
 
-func (reqOpts) ContextWrapper(cw contextWrapper) ReqOption {
+func (reqOpts) ContextWrapper(cw xcontext.Wrapper) ReqOption {
 	return func(cfg *reqConfig) {
 		cfg.contextWrapper = cw
 	}
 }
 
-func (fcr *FluentClientRequest) ContextWrapper(cw contextWrapper) *FluentClientRequest {
+func (fcr *FluentClientRequest) ContextWrapper(cw xcontext.Wrapper) *FluentClientRequest {
 	fcr.cfg.contextWrapper = cw
 	return fcr
 }
@@ -1291,6 +1289,12 @@ func (c *Client) reqConfig() reqConfig {
 	} else {
 		cfg.cowDoneQuery = false
 	}
+
+	if p := c.cfg.contextWrapperProvider; p != nil {
+		if cw := p(); cw != nil {
+			cfg.clientContextWrapper = cw
+		}
+	}
 	return cfg
 }
 
@@ -1458,7 +1462,7 @@ func (fcr *FluentClientRequest) Close() error {
 	}
 	fcr.closed = true
 
-	if cw := fcr.c.cfg.contextWrapper; cw != nil {
+	if cw := fcr.cfg.clientContextWrapper; cw != nil {
 		defer cw.CleanupWrappedContext()
 	}
 

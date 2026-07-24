@@ -129,7 +129,7 @@ func (rr *reqRunner) run(ctx context.Context, firstNilOptIndex int) (_stdResp *h
 	defer rr.endTeardownSpan()
 	defer rr.finalize(&_stdResp, &_clientResp, &_err)
 
-	if cw := rr.c.cfg.contextWrapper; cw != nil {
+	if cw := rr.cfg.clientContextWrapper; cw != nil {
 		ctx = cw.WrapContext(ctx)
 		defer cw.CleanupWrappedContext()
 	}
