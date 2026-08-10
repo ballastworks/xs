@@ -16,6 +16,26 @@ type RequestShedder interface {
 	ShedRequests(context.Context)
 }
 
+type lsFlag uint8
+
+const (
+	lsFlagHasDisableGeneralOptionsHandler lsFlag = 1 << iota
+	lsFlagHasReadTimeout
+	lsFlagHasReadHeaderTimeout
+	lsFlagHasWriteTimeout
+	lsFlagHasIdleTimeout
+
+	lsFlagValueDisableGeneralOptionsHandler
+)
+
+type listenAndServeConfig struct {
+	flags             lsFlag
+	readTimeout       time.Duration
+	readHeaderTimeout time.Duration
+	writeTimeout      time.Duration
+	idleTimeout       time.Duration
+}
+
 type srvConfig struct {
 	server                      *http.Server
 	traceMiddlewares            MiddlewareChain
@@ -31,6 +51,17 @@ type srvConfig struct {
 	disableKeepAlivesOnShutdown bool
 	logfSet                     bool
 	disableLogfMiddleware       bool
+
+	disableGeneralOptionsHandlerSet bool
+	disableGeneralOptionsHandler    bool
+	readTimeoutSet                  bool
+	readHeaderTimeoutSet            bool
+	writeTimeoutSet                 bool
+	idleTimeoutSet                  bool
+	readTimeout                     time.Duration
+	readHeaderTimeout               time.Duration
+	writeTimeout                    time.Duration
+	idleTimeout                     time.Duration
 }
 
 func (cfg *srvConfig) validate() error {
@@ -142,5 +173,75 @@ func (srvOpts) LoggerFactory(factory xslog.LoggerFactory) SrvOption {
 	return func(cfg *srvConfig) {
 		cfg.logf = factory
 		cfg.logfSet = true
+	}
+}
+
+func (srvOpts) DisableGeneralOptionsHandler(b bool) SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.disableGeneralOptionsHandlerSet = true
+		cfg.disableGeneralOptionsHandler = b
+	}
+}
+
+func (srvOpts) ReadTimeout(d time.Duration) SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.readTimeoutSet = true
+		cfg.readTimeout = d
+	}
+}
+
+func (srvOpts) NoReadTimeout() SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.readTimeoutSet = true
+		cfg.readTimeout = 0
+	}
+}
+
+// ReadHeaderTimeout is the same as setting http.Server's ReadHeaderTimeout
+// property.
+//
+// ReadHeaderTimeout should not be called with a zero duration to
+// disable read header timeouts. Instead use NoReadHeaderTimeout().
+//
+// A value of zero here should be considered undefined behavior.
+func (opt srvOpts) ReadHeaderTimeout(d time.Duration) SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.readHeaderTimeoutSet = true
+		cfg.readHeaderTimeout = d
+	}
+}
+
+func (srvOpts) NoReadHeaderTimeout() SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.readHeaderTimeoutSet = true
+		cfg.readHeaderTimeout = -1
+	}
+}
+
+func (srvOpts) WriteTimeout(d time.Duration) SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.writeTimeoutSet = true
+		cfg.writeTimeout = d
+	}
+}
+
+func (srvOpts) NoWriteTimeout() SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.writeTimeoutSet = true
+		cfg.writeTimeout = -1
+	}
+}
+
+func (srvOpts) IdleTimeout(d time.Duration) SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.idleTimeoutSet = true
+		cfg.idleTimeout = d
+	}
+}
+
+func (srvOpts) NoIdleTimeout() SrvOption {
+	return func(cfg *srvConfig) {
+		cfg.idleTimeoutSet = true
+		cfg.idleTimeout = -1
 	}
 }

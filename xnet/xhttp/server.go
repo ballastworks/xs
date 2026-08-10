@@ -19,6 +19,9 @@ import (
 const (
 	errMsgShutdownDeadlineExceeded = "graceful shutdown deadline exceeded"
 	defaultHttpSpanOperation       = "http.request"
+
+	defaultServerReadTimeout  = time.Second * 5
+	defaultServerWriteTimeout = time.Hour * 4 // anything is better than infinity by default
 )
 
 var (
@@ -64,6 +67,8 @@ type Server struct {
 	rootHandler                 http.Handler
 	shedRequestsOnShutdown      bool
 	disableKeepAlivesOnShutdown bool
+
+	lsCfg listenAndServeConfig
 }
 
 type defaultTraceMiddlewareChainConfig struct {
@@ -198,6 +203,34 @@ func newServer(cfg srvConfig) (*Server, error) {
 	// "server handler" with tracing capability middlewares
 	hs.Handler = MiddlewareChainExt(cfg.traceMiddlewares).Handler(handler)
 
+	var flags lsFlag
+	if cfg.disableGeneralOptionsHandlerSet {
+		flags |= lsFlagHasDisableGeneralOptionsHandler
+		if cfg.disableGeneralOptionsHandler {
+			flags |= lsFlagValueDisableGeneralOptionsHandler
+		}
+	}
+	if cfg.readTimeoutSet {
+		flags |= lsFlagHasReadTimeout
+	}
+	if cfg.readHeaderTimeoutSet {
+		flags |= lsFlagHasReadHeaderTimeout
+	}
+	if cfg.writeTimeoutSet {
+		flags |= lsFlagHasWriteTimeout
+	}
+	if cfg.idleTimeoutSet {
+		flags |= lsFlagHasIdleTimeout
+	}
+
+	lsCfg := listenAndServeConfig{
+		flags,
+		cfg.readTimeout,
+		cfg.readHeaderTimeout,
+		cfg.writeTimeout,
+		cfg.idleTimeout,
+	}
+
 	return &Server{
 		logf,
 		nil,
@@ -207,6 +240,7 @@ func newServer(cfg srvConfig) (*Server, error) {
 		rootHandler,
 		cfg.shedRequestsOnShutdown,
 		cfg.disableKeepAlivesOnShutdown,
+		lsCfg,
 	}, nil
 }
 
@@ -397,6 +431,55 @@ func (srv *Server) listenAndServe(ctx context.Context, logger xslog.Logger) erro
 
 		port = portVal
 		addr = net.JoinHostPort(host, strconv.Itoa(portVal))
+	}
+
+	// never ship infinity timeouts by default or options handlers on by default
+	{
+		var optErr error
+
+		if (srv.lsCfg.flags & lsFlagHasDisableGeneralOptionsHandler) == 0 {
+			srv.server.DisableGeneralOptionsHandler = true
+		} else {
+			srv.server.DisableGeneralOptionsHandler = ((srv.lsCfg.flags & lsFlagValueDisableGeneralOptionsHandler) != 0)
+		}
+
+		readTimeout := srv.server.ReadTimeout
+		if (srv.lsCfg.flags & lsFlagHasReadTimeout) == 0 {
+			if readTimeout == 0 {
+				// implicit non-zero
+				readTimeout = defaultServerReadTimeout
+			}
+		} else {
+			// explicitly set
+			readTimeout = srv.lsCfg.readTimeout
+		}
+		srv.server.ReadTimeout = readTimeout
+
+		if (srv.lsCfg.flags & lsFlagHasReadHeaderTimeout) == 0 {
+			if srv.server.ReadHeaderTimeout == 0 && (readTimeout <= 0) {
+				optErr = errors.New("server read header timeout state must be specified when read timeout is disabled")
+			}
+		} else {
+			srv.server.ReadHeaderTimeout = srv.lsCfg.readHeaderTimeout
+		}
+
+		if (srv.lsCfg.flags & lsFlagHasWriteTimeout) == 0 {
+			if srv.server.WriteTimeout == 0 {
+				srv.server.WriteTimeout = defaultServerWriteTimeout
+			}
+		} else {
+			srv.server.WriteTimeout = srv.lsCfg.writeTimeout
+		}
+
+		// note: idleTimeout is the only setting that the standard sdk maps
+		// a zero value to a functionally defensive greater than zero value
+		if (srv.lsCfg.flags & lsFlagHasIdleTimeout) != 0 {
+			srv.server.IdleTimeout = srv.lsCfg.idleTimeout
+		}
+
+		if optErr != nil {
+			return optErr
+		}
 	}
 
 	listener, err := net.Listen("tcp", addr)
