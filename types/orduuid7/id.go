@@ -162,3 +162,11 @@ func (id *OrdUuid7) Scan(v any) error {
 	*id = buf
 	return nil
 }
+
+func (id OrdUuid7) Bytes() []byte {
+	return id[:]
+}
+
+func (id *OrdUuid7) MutBytes() []byte {
+	return id[:]
+}
