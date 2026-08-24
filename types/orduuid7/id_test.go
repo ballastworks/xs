@@ -17,6 +17,22 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// jsonEscapeHex renders s as the contents of a JSON string using
+// backslash-u00XX escapes so decoders take the unquote path rather
+// than the compact fast path.
+func jsonEscapeHex(s string) string {
+	const hexDigits = "0123456789abcdef"
+
+	var sb strings.Builder
+	for i := range len(s) {
+		sb.WriteByte('\\')
+		sb.WriteString("u00")
+		sb.WriteByte(hexDigits[s[i]>>4])
+		sb.WriteByte(hexDigits[s[i]&0x0F])
+	}
+	return sb.String()
+}
+
 // verify that the type implements expected interfaces
 var (
 	_ fmt.Stringer = OrdUuid7{}
@@ -457,6 +473,28 @@ func TestUnmarshalJSON(t *testing.T) {
 				is.Equal(src, r.id)
 			},
 		).Run(t)
+
+		tbdd.WT(
+			TC{text: `"` + jsonEscapeHex(`00000000000000000000000000000027`) + `"`},
+			"unmarshaling the JSON inflated literal into a populated id",
+			func(t *testing.T, tc TC) R {
+				id := src
+				err := id.UnmarshalJSON([]byte(tc.text))
+
+				return R{id, err}
+			},
+			"sets the ID to the deflated value",
+			func(t *testing.T, tc TC, r R) {
+				is := assert.New(t)
+
+				is.NoError(r.err)
+				is.NotEqual(src, r.id)
+				for i := range byteCount - 1 {
+					is.Equal(r.id[i], uint8(0))
+				}
+				is.True(r.id.ValidNonZero())
+			},
+		).Run(t)
 	}
 
 	{
@@ -497,6 +535,8 @@ func TestUnmarshalJSON(t *testing.T) {
 					{Kind: "missing-trailing-quote", TC: TC{text: `"` + src.String() + "0"}},
 					{Kind: "invalid-hex", TC: TC{text: `"` + strings.Repeat("zz", byteCount) + `"`}},
 					{Kind: "valid-hex-invalid-marker", TC: TC{text: `"` + strings.Repeat("00", byteCount) + `"`}},
+					{Kind: "escaped-invalid-hex", TC: TC{text: `"` + jsonEscapeHex("z") + strings.Repeat("z", marshaledByteCount-1) + `"`}},
+					{Kind: "escaped-valid-hex-invalid-marker", TC: TC{text: `"` + jsonEscapeHex("0") + strings.Repeat("0", marshaledByteCount-1) + `"`}},
 				} {
 					if !yield(v) {
 						return
@@ -507,6 +547,101 @@ func TestUnmarshalJSON(t *testing.T) {
 
 		lc.Run(t)
 	}
+
+	{
+		type TC struct {
+			text string
+		}
+		type R struct {
+			id  OrdUuid7
+			err error
+		}
+
+		tbdd.WT(
+			// jsonEscapeHex("0")[:2] is a lone `\u` prefix; following it
+			// with non-hex characters makes the escape sequence malformed
+			// while the length and quote checks still pass
+			TC{text: `"` + jsonEscapeHex("0")[:2] + strings.Repeat("z", marshaledByteCount+1) + `"`},
+			"unmarshaling a JSON string with a malformed escape sequence into a populated id",
+			func(t *testing.T, tc TC) R {
+				id := src
+				err := id.UnmarshalJSON([]byte(tc.text))
+
+				return R{id, err}
+			},
+			"it surfaces the json decoding error and leaves the destination unchanged",
+			func(t *testing.T, tc TC, r R) {
+				is := assert.New(t)
+
+				is.Error(r.err)
+				is.NotErrorIs(r.err, ErrInvalidJsonUnmarshalText)
+				is.Equal(src, r.id)
+			},
+		).Run(t)
+	}
+}
+
+func TestBytes(t *testing.T) {
+	t.Parallel()
+
+	type TC struct {
+		id OrdUuid7
+	}
+	type R struct {
+		b []byte
+	}
+
+	tbdd.WT(
+		TC{id: New()},
+		"getting Bytes and mutating the returned slice",
+		func(t *testing.T, tc TC) R {
+			b := tc.id.Bytes()
+			b[0] ^= 0xFF
+
+			return R{b}
+		},
+		"the slice holds all 16 bytes but is a copy detached from the id",
+		func(t *testing.T, tc TC, r R) {
+			is := assert.New(t)
+
+			is.Len(r.b, byteCount)
+			is.Equal(tc.id[0]^0xFF, r.b[0])
+			is.Equal(tc.id[1:], r.b[1:])
+		},
+	).Run(t)
+}
+
+func TestMutBytes(t *testing.T) {
+	t.Parallel()
+
+	type TC struct {
+		id OrdUuid7
+	}
+	type R struct {
+		id OrdUuid7
+		b  []byte
+	}
+
+	tbdd.WT(
+		TC{id: New()},
+		"getting MutBytes and mutating the returned slice",
+		func(t *testing.T, tc TC) R {
+			id := tc.id
+			b := id.MutBytes()
+			b[0] ^= 0xFF
+
+			return R{id, b}
+		},
+		"the slice holds all 16 bytes and aliases the id so the mutation is visible",
+		func(t *testing.T, tc TC, r R) {
+			is := assert.New(t)
+
+			is.Len(r.b, byteCount)
+			is.Equal(tc.id[0]^0xFF, r.id[0])
+			is.Equal(tc.id[1:], r.id[1:])
+			is.Equal(r.id[:], r.b)
+		},
+	).Run(t)
 }
 
 func TestValue(t *testing.T) {
