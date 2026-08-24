@@ -232,10 +232,10 @@ func TestUnmarshalJSONFrom(t *testing.T) {
 					{Kind: "truncated-string", TC: TC{text: `"` + src.String()}},
 					{Kind: "too-short", TC: TC{text: `"` + src.String()[:marshaledByteCount-1] + `"`, expErrIs: ErrInvalidJsonUnmarshalText}},
 					{Kind: "too-long", TC: TC{text: `"` + strings.Repeat("0", marshaledByteCount*6+1) + `"`, expErrIs: ErrInvalidJsonUnmarshalText}},
-					{Kind: "compact-invalid-hex", TC: TC{text: `"` + strings.Repeat("zz", byteCount) + `"`, expErrIs: ErrInvalidUnmarshalText}},
-					{Kind: "compact-valid-hex-invalid-marker", TC: TC{text: `"` + strings.Repeat("00", byteCount) + `"`, expErrIs: ErrInvalidUnmarshalText}},
-					{Kind: "escaped-invalid-hex", TC: TC{text: `"` + jsonEscapeHex("z") + strings.Repeat("z", marshaledByteCount-1) + `"`, expErrIs: ErrInvalidUnmarshalText}},
-					{Kind: "escaped-wrong-decoded-length", TC: TC{text: `"` + jsonEscapeHex("000000") + `"`, expErrIs: ErrInvalidUnmarshalText}},
+					{Kind: "compact-invalid-hex", TC: TC{text: `"` + strings.Repeat("zz", byteCount) + `"`, expErrIs: ErrInvalidJsonUnmarshalText}},
+					{Kind: "compact-valid-hex-invalid-marker", TC: TC{text: `"` + strings.Repeat("00", byteCount) + `"`, expErrIs: ErrInvalidJsonUnmarshalText}},
+					{Kind: "escaped-invalid-hex", TC: TC{text: `"` + jsonEscapeHex("z") + strings.Repeat("z", marshaledByteCount-1) + `"`, expErrIs: ErrInvalidJsonUnmarshalText}},
+					{Kind: "escaped-wrong-decoded-length", TC: TC{text: `"` + jsonEscapeHex("000000") + `"`, expErrIs: ErrInvalidJsonUnmarshalText}},
 					{Kind: "invalid-utf8-in-string", TC: TC{text: `"` + strings.Repeat("a", marshaledByteCount) + "\xff" + `"`, allowInvalidUTF8: true}},
 				} {
 					if !yield(v) {

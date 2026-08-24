@@ -44,7 +44,11 @@ func (id *OrdUuid7) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	}
 
 	if len(jv) == marshaledByteCount+2 {
-		return id.UnmarshalText(jv[1 : len(jv)-1])
+		if err := id.UnmarshalText(jv[1 : len(jv)-1]); err != nil {
+			return ErrInvalidJsonUnmarshalText
+		}
+
+		return nil
 	}
 
 	if len(jv) < marshaledByteCount+2 || len(jv) > marshaledByteCount*6+2 {
@@ -57,5 +61,9 @@ func (id *OrdUuid7) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 		return err
 	}
 
-	return id.UnmarshalText(buf)
+	if err := id.UnmarshalText(buf); err != nil {
+		return ErrInvalidJsonUnmarshalText
+	}
+
+	return nil
 }
