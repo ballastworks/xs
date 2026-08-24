@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql/driver"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -93,8 +94,8 @@ func (id OrdUuid7) MarshalJSON() ([]byte, error) {
 	}
 
 	var buf [marshaledByteCount + 2]byte
-	id.appendText(buf[1:1])
 	buf[0] = '"'
+	id.appendText(buf[1:1])
 	buf[len(buf)-1] = '"'
 
 	return buf[:], nil
@@ -105,12 +106,40 @@ func (id *OrdUuid7) UnmarshalJSON(p []byte) error {
 		return nil
 	}
 
-	if len(p) != marshaledByteCount+2 || p[0] != '"' || p[len(p)-1] != '"' {
+	if len(p) == marshaledByteCount+2 {
+
+		if p[0] != '"' || p[len(p)-1] != '"' {
+			return ErrInvalidJsonUnmarshalText
+		}
+
+		var v OrdUuid7
+		if err := v.UnmarshalText(p[1 : len(p)-1]); err != nil {
+			return ErrInvalidJsonUnmarshalText
+		}
+
+		*id = v
+		return nil
+	}
+
+	// \uXXXX for an ascii character is technically valid encoding
+	// but don't do that. For the love of everything holy, just don't.
+
+	var buf string
+
+	if len(p) < marshaledByteCount+2 || len(p) > (marshaledByteCount*6+2) || p[0] != '"' || p[len(p)-1] != '"' {
+		return ErrInvalidJsonUnmarshalText
+	}
+
+	if err := json.Unmarshal(p, &buf); err != nil {
+		return err
+	}
+
+	if len(buf) != marshaledByteCount {
 		return ErrInvalidJsonUnmarshalText
 	}
 
 	var v OrdUuid7
-	if err := v.UnmarshalText(p[1 : len(p)-1]); err != nil {
+	if err := v.UnmarshalText([]byte(buf)); err != nil {
 		return ErrInvalidJsonUnmarshalText
 	}
 
@@ -144,7 +173,7 @@ func (id *OrdUuid7) Scan(v any) error {
 			return ErrInvalidScanValue
 		}
 
-		copy(buf[:], []byte(vt))
+		copy(buf[:], vt)
 	case []byte:
 		if len(vt) != byteCount {
 			return ErrInvalidScanValue
