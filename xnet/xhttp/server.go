@@ -14,6 +14,8 @@ import (
 
 	"github.com/ballastworks/xs/xlog/xslog"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -74,6 +76,8 @@ type Server struct {
 type defaultTraceMiddlewareChainConfig struct {
 	spanOperation           string
 	middlewareLoggerOptions []MiddlewareLoggerOption
+	tracerProvider          trace.TracerProvider
+	propagators             propagation.TextMapPropagator
 }
 
 type DefaultTraceMiddlewareChainOption func(*defaultTraceMiddlewareChainConfig)
@@ -96,6 +100,26 @@ func (DefaultTraceMiddlewareChainOptions) SpanOperation(v string) DefaultTraceMi
 	}
 }
 
+// TracerProvider specifies the provider the request span is created from
+// instead of the global otel tracer provider.
+//
+// A nil value means the global otel tracer provider is used.
+func (DefaultTraceMiddlewareChainOptions) TracerProvider(v trace.TracerProvider) DefaultTraceMiddlewareChainOption {
+	return func(cfg *defaultTraceMiddlewareChainConfig) {
+		cfg.tracerProvider = v
+	}
+}
+
+// Propagators specifies the propagator used to extract trace information
+// from incoming requests instead of the global otel text map propagator.
+//
+// A nil value means the global otel text map propagator is used.
+func (DefaultTraceMiddlewareChainOptions) Propagators(v propagation.TextMapPropagator) DefaultTraceMiddlewareChainOption {
+	return func(cfg *defaultTraceMiddlewareChainConfig) {
+		cfg.propagators = v
+	}
+}
+
 func DefaultTraceMiddlewareChain(options ...DefaultTraceMiddlewareChainOption) MiddlewareChain {
 	cfg := defaultTraceMiddlewareChainConfig{
 		// empty
@@ -105,7 +129,11 @@ func DefaultTraceMiddlewareChain(options ...DefaultTraceMiddlewareChainOption) M
 		f(&cfg)
 	}
 
-	trace, err := NewTraceMiddleware()
+	return newDefaultTraceMiddlewareChain(cfg)
+}
+
+func newDefaultTraceMiddlewareChain(cfg defaultTraceMiddlewareChainConfig) MiddlewareChain {
+	traceMW, err := NewTraceMiddleware()
 	if err != nil {
 		panic(err)
 	}
@@ -115,22 +143,47 @@ func DefaultTraceMiddlewareChain(options ...DefaultTraceMiddlewareChainOption) M
 		spanOperation = defaultHttpSpanOperation
 	}
 
+	var otelOptions []otelhttp.Option
+	if v := cfg.tracerProvider; v != nil {
+		otelOptions = append(otelOptions, otelhttp.WithTracerProvider(v))
+	}
+	if v := cfg.propagators; v != nil {
+		otelOptions = append(otelOptions, otelhttp.WithPropagators(v))
+	}
+
+	// The otel handler must wrap MiddlewareLogger so the request span is in
+	// the context MiddlewareLogger receives. Logs emitted by MiddlewareLogger
+	// itself (such as request correlation logs) source their trace_id and
+	// span_id values from that context.
 	return UnsafeSliceToMiddlewareChain(
 		MiddlewareRequestInFlightBegin(),
-		MiddlewareLogger(cfg.middlewareLoggerOptions...),
-		trace,
 		func(next http.Handler) http.Handler {
-			return otelhttp.NewHandler(next, spanOperation)
+			return otelhttp.NewHandler(next, spanOperation, otelOptions...)
 		},
+		MiddlewareLogger(cfg.middlewareLoggerOptions...),
+		traceMW,
 	)
 }
 
-func EnrichedTraceMiddlewareChain() MiddlewareChain {
-	return DefaultTraceMiddlewareChain(
-		DefaultTraceMiddlewareChainOpts().MiddlewareLoggerOptions(
-			MiddlewareLoggerOpts().EmitRequestCorrelationLogs(true),
-		),
-	)
+// EnrichedTraceMiddlewareChain is the same as DefaultTraceMiddlewareChain
+// except request correlation logs are emitted unless the provided
+// MiddlewareLoggerOptions explicitly disable them.
+func EnrichedTraceMiddlewareChain(options ...DefaultTraceMiddlewareChainOption) MiddlewareChain {
+	cfg := defaultTraceMiddlewareChainConfig{
+		// empty
+	}
+
+	for _, f := range options {
+		f(&cfg)
+	}
+
+	{
+		mlo := make([]MiddlewareLoggerOption, 0, len(cfg.middlewareLoggerOptions)+1)
+		mlo = append(mlo, MiddlewareLoggerOpts().EmitRequestCorrelationLogs(true))
+		cfg.middlewareLoggerOptions = append(mlo, cfg.middlewareLoggerOptions...)
+	}
+
+	return newDefaultTraceMiddlewareChain(cfg)
 }
 
 func DefaultBeforeHandlerMiddlewareChain(logf xslog.LoggerFactory) MiddlewareChain {
