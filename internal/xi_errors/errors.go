@@ -35,12 +35,16 @@ func StacktraceFromError(err error) interface{ Stacktrace() []uintptr } {
 		// within here at this context only implements `Unwrap() error`.
 		//
 
-		// Peek within the error to see if the the error implementing the tracer
-		// wraps around another error implementing the tracer. This way we always
-		// return the innermost tracer instance.
+		// Peek within the error to see if the error implementing the tracer
+		// wraps around another error implementing the tracer, so that the
+		// innermost tracer is returned: the one closest to where the error
+		// happened. A tracer holding no frames is skipped over, though, and
+		// the search stops at the tracer above it: that inner error has been
+		// released (a shared error returned once already) and the outer
+		// tracer is the fresh stack WithStack took for this occurrence.
 		if v, ok := t.(interface{ Unwrap() error }); ok {
 			if err := v.Unwrap(); err != nil {
-				if nt := stackTracer(nil); errors.As(err, &nt) && nt != nil {
+				if nt := stackTracer(nil); errors.As(err, &nt) && nt != nil && len(nt.Stacktrace()) > 0 {
 					t = nt
 					continue
 				}

@@ -3,6 +3,15 @@
 // Formatting:
 //   - %v  prints the error message (like the standard library)
 //   - %+v prints the error message followed by a stack trace
+//
+// Stacks are captured at the call site and their buffers are leased from a
+// pool, so New and WithStack belong where the error happens, not at package
+// level. A sentinel declared with New would carry the init-time stack, which
+// names nothing useful, and would give up its buffer the first time a
+// consumer such as xhttp released it. Declare sentinels with errors.New and
+// wrap them with WithStack where they are returned; WithStack takes a fresh
+// stack whenever the chain has none live, so a shared error that has already
+// been released gets a correct trace on its next return.
 package xerrors
 
 import (
@@ -15,7 +24,6 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 
 	"github.com/ballastworks/xs/internal/xi_errors"
 )
@@ -29,6 +37,10 @@ const (
 	tracePoolSize          = maxStackDepthShift - defaultStackDepthShift + 1
 )
 
+// tracer is what getTracer searches an error chain for. tracedError is the
+// only implementation in this package; the interface stays so that another
+// package's error type can carry and release its own stack and be found by
+// the same search, StacktraceReleaser included.
 type tracer interface {
 	Stacktrace() []uintptr
 	ReleaseStacktrace()
@@ -180,10 +192,13 @@ func (s stackTrace) AppendText(p []byte) ([]byte, error) {
 	return p, nil
 }
 
+// pooledTrace is one trace buffer leased from a tracePool. It has no notion
+// of who holds it: ownership belongs to the tracedError that took it (see
+// tracedError.trace), which is what makes a repeated release safe. The pool
+// field is set once when the pool constructs the buffer and never changes.
 type pooledTrace struct {
 	trace []uintptr
-	// pool is a CAS enabled pointer to a *sync.Pool type
-	poolAtomic unsafe.Pointer
+	pool  *sync.Pool
 }
 
 //go:noinline
@@ -206,16 +221,15 @@ func newPooledTrace(skip int) *pooledTrace {
 
 		if n < len(pt.trace) {
 			if n == 0 {
-				pool.Put(pt)
+				pt.release()
 				return nil
 			}
 
 			pt.trace = pt.trace[:n]
-			pt.poolAtomic = unsafe.Pointer(pool)
 			return pt
 		}
 
-		pool.Put(pt)
+		pt.release()
 	}
 
 	pool := &tracePools[tracePoolSize-1]
@@ -223,31 +237,16 @@ func newPooledTrace(skip int) *pooledTrace {
 	n := runtime.Callers(skip, pt.trace)
 
 	pt.trace = pt.trace[:n]
-	pt.poolAtomic = unsafe.Pointer(pool)
 	return pt
 }
 
-func (pt *pooledTrace) Stacktrace() []uintptr {
-	if pt == nil {
-		return nil
-	}
-
-	return pt.trace
-}
-
-func (pt *pooledTrace) ReleaseStacktrace() {
-	if pt == nil || atomic.LoadPointer(&pt.poolAtomic) == nil {
-		return
-	}
-
-	pool := (*sync.Pool)(atomic.SwapPointer(&pt.poolAtomic, nil))
-	if pool == nil {
-		return
-	}
-
+// release hands the buffer back to its pool at full capacity. The caller
+// must be the buffer's sole owner and must not touch it afterwards; the
+// tracedError enforces that with an atomic swap of its pointer, so this is
+// reached exactly once per lease.
+func (pt *pooledTrace) release() {
 	pt.trace = pt.trace[:cap(pt.trace)]
-
-	pool.Put(pt)
+	pt.pool.Put(pt)
 }
 
 func StacktraceReleaser(err error) interface{ ReleaseStacktrace() } {
@@ -266,45 +265,82 @@ func WithStack(err error) error {
 		return nil
 	}
 
-	// instead of wrapping and returning a new tracedError,
-	// just going to return the existing error if it already
-	// has a tracer in its chain.
-	if _, ok := getTracer(err); ok {
+	// Return the error as is when its chain already holds a LIVE stack.
+	// A tracer with no frames has been released (or captured nothing):
+	// its owner returned it once already, and this return deserves its own
+	// stack. Without this, a shared error such as a cached result or a
+	// sentinel declared with New would log without a trace on every
+	// occurrence after the first.
+	if t, ok := getTracer(err); ok && len(t.Stacktrace()) > 0 {
 		return err
 	}
 
-	trace := newPooledTrace(1)
-
-	return &tracedError{err, trace}
+	return newTracedError(err, newPooledTrace(1))
 }
 
 //go:noinline
 func New(msg string) error {
-	err := errors.New(msg)
-
-	trace := newPooledTrace(1)
-
-	return &tracedError{err, trace}
+	return newTracedError(errors.New(msg), newPooledTrace(1))
 }
 
-// tracedError can be constructed with either:
-//   - a real *Stack (preferred), or
-//   - a stackTraceProvider (useful for interoperability / reusing foreign stack printers).
+func newTracedError(cause error, pt *pooledTrace) *tracedError {
+	e := &tracedError{cause: cause}
+	e.trace.Store(pt)
+	return e
+}
+
+// tracedError is an error with a leased stack trace buffer.
 //
 // It implements:
 //   - error
 //   - fmt.Formatter
 //   - Unwrap() error
-//   - Stack() []uintptr
+//   - Stacktrace() []uintptr
+//   - ReleaseStacktrace()
+//
+// The error owns its buffer, not the other way round. ReleaseStacktrace
+// atomically takes the pointer out of the error before the buffer goes back
+// to the pool, so a second release finds nothing and does nothing, however
+// many other errors have leased and released that buffer since. The
+// previous design kept the "released" flag on the buffer itself, which
+// broke as soon as the buffer was leased again between two releases of the
+// same error: the second release saw a live lease and returned another
+// error's buffer to the pool (the ABA problem). xhttp used to release every
+// error response twice on its ordinary path, once in Response.WriteResp and
+// once from the router's deferred release, so that was not a corner case;
+// the router alone releases now, but a second release from anywhere must
+// stay harmless.
 type tracedError struct {
 	cause error
 
-	tracer
+	// trace is nil once released. Read with Stacktrace, taken with
+	// ReleaseStacktrace, never written otherwise.
+	trace atomic.Pointer[pooledTrace]
 }
 
 func (e *tracedError) Error() string { return e.cause.Error() }
 
 func (e *tracedError) Unwrap() error { return e.cause }
+
+// Stacktrace returns the leased frames, or nil once released. The slice is
+// only valid until ReleaseStacktrace; a caller that needs it afterwards
+// copies it first.
+func (e *tracedError) Stacktrace() []uintptr {
+	if pt := e.trace.Load(); pt != nil {
+		return pt.trace
+	}
+
+	return nil
+}
+
+// ReleaseStacktrace returns the buffer to its pool. Safe to call more than
+// once and from more than one goroutine: only the call that takes the
+// pointer releases.
+func (e *tracedError) ReleaseStacktrace() {
+	if pt := e.trace.Swap(nil); pt != nil {
+		pt.release()
+	}
+}
 
 // Format implements fmt.Formatter.
 //
@@ -318,11 +354,9 @@ func (e *tracedError) Format(f fmt.State, verb rune) {
 		if f.Flag('+') {
 			io.WriteString(f, e.Error())
 
-			if t := e.tracer; t != nil {
-				if trace := t.Stacktrace(); len(trace) > 0 {
-					io.WriteString(f, "\n")
-					stackTrace(trace).Format(f)
-				}
+			if trace := e.Stacktrace(); len(trace) > 0 {
+				io.WriteString(f, "\n")
+				stackTrace(trace).Format(f)
 			}
 			return
 		}
@@ -342,19 +376,21 @@ func (e *tracedError) AppendText(p []byte) ([]byte, error) {
 	errMsg := e.Error()
 	n := len(errMsg)
 
+	// One load: the trace may be released concurrently, and the size
+	// computed for one set of frames must be the size of the frames written.
+	trace := e.Stacktrace()
+
 	var nTrace int
-	if t := e.tracer; t != nil {
-		if trace := t.Stacktrace(); len(trace) > 0 {
-			nTrace = traceSize(trace)
-			n += len(joinStr) + nTrace
-		}
+	if len(trace) > 0 {
+		nTrace = traceSize(trace)
+		n += len(joinStr) + nTrace
 	}
 
 	p = slices.Grow(p, n)
 	p = append(p, errMsg...)
 	if nTrace > 0 {
 		p = append(p, joinStr...)
-		p = appendTrace(p, e.tracer.Stacktrace())
+		p = appendTrace(p, trace)
 	}
 
 	return p, nil
@@ -369,9 +405,9 @@ var tracePools [tracePoolSize]sync.Pool
 func init() {
 	for i := range tracePools {
 		size := defaultStackDepth << uint(i)
-		tracePools[i].New = func() any {
-			trace := make([]uintptr, size)
-			return &pooledTrace{trace, nil}
+		pool := &tracePools[i]
+		pool.New = func() any {
+			return &pooledTrace{trace: make([]uintptr, size), pool: pool}
 		}
 	}
 }
@@ -407,12 +443,16 @@ func getTracer(err error) (tracer, bool) {
 		// within here at this context only implements `Unwrap() error`.
 		//
 
-		// Peek within the error to see if the the error implementing the tracer
-		// wraps around another error implementing the tracer. This way we always
-		// return the innermost tracer instance.
+		// Peek within the error to see if the error implementing the tracer
+		// wraps around another error implementing the tracer, so that the
+		// innermost tracer is returned: the one closest to where the error
+		// happened. A tracer holding no frames is skipped over, though, and
+		// the search stops at the tracer above it: that inner error has been
+		// released (a shared error returned once already) and the outer
+		// tracer is the fresh stack WithStack took for this occurrence.
 		if v, ok := t.(interface{ Unwrap() error }); ok {
 			if err := v.Unwrap(); err != nil {
-				if nt := tracer(nil); errors.As(err, &nt) && nt != nil {
+				if nt := tracer(nil); errors.As(err, &nt) && nt != nil && len(nt.Stacktrace()) > 0 {
 					t = nt
 					continue
 				}
@@ -460,6 +500,19 @@ type traceStringer interface {
 
 var _ traceStringer = stacktraceStringer(stackTrace(nil)) // TODO: move to tests
 
+// Stacktrace returns a stringer over the frames of the innermost traced
+// error in the chain, or nil when there are none.
+//
+// The stringer aliases the error's leased buffer: it is valid until the
+// error's ReleaseStacktrace, and its String or MarshalText must run before
+// that. Every caller in this module does so synchronously (the log
+// attribute builders call String at once).
+//
+// TODO: if a consumer is ever observed formatting after the release, such as
+// an asynchronous log handler that retains the error value, clone the
+// frames here (slices.Clone) so the stringer owns its data. It is the
+// logging path, so eight bytes per frame per logged error is affordable;
+// it is not done today because no such consumer exists.
 func Stacktrace(err error) stacktraceStringer {
 
 	t := xi_errors.StacktraceFromError(err)

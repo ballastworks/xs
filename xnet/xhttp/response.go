@@ -135,22 +135,26 @@ func (er ErrResponse) CausedBy(ctx context.Context, err error) ErrResponse {
 		if e := v.Unwrap(); e != nil {
 			err = e
 		} else {
-			err = xerrors.WithStack(errUnknownCause)
+			err = errUnknownCause
 		}
 	} else if te, ok := err.(interface{ Unwrap() error }); ok {
-		unwrappedErr := te.Unwrap()
-		if v, ok := unwrappedErr.(errResponder); ok {
+		if v, ok := te.Unwrap().(errResponder); ok {
 			if e := v.Unwrap(); e != nil {
 				err = e
 			} else {
-				err = xerrors.WithStack(errUnknownCause)
+				err = errUnknownCause
 			}
 		}
-	} else {
-		err = xerrors.WithStack(err)
 	}
 
-	er.cause = err
+	// Every cause gets a stack taken here unless its chain already holds a
+	// live one (WithStack returns such an error unchanged). Two cases used
+	// to slip through because an error that merely implemented Unwrap was
+	// left as it was: a fmt.Errorf("%w") wrapper reached the logs without a
+	// stack, and a shared traced error (a cached result, a sentinel declared
+	// with xerrors.New) stayed released after the router freed it on its
+	// first return, so every later response carried no trace.
+	er.cause = xerrors.WithStack(err)
 
 	return er
 }
@@ -460,11 +464,15 @@ func (resp Response) WriteResp(ctx context.Context, w http.ResponseWriter) {
 			logFunc(ctx, logger, resp.errResp, sc)
 		}
 
-		if err := resp.errResp; err != nil {
-			if v := xerrors.StacktraceReleaser(err); v != nil {
-				v.ReleaseStacktrace()
-			}
-		}
+		// The error's stack trace is NOT released here. Writing a response
+		// does not end the error's life: a Response may be written many
+		// times (StaticHandler renders it once at construction, ServeHTTP
+		// renders it per request), and the error may be logged again by
+		// whoever returned it. The owner of the error's lifetime releases:
+		// the router's error handler strategy after the handler returns,
+		// and the client-disconnect observer for the error it holds. An
+		// unreleased trace only costs the pool a reuse; a release by a
+		// non-owner used to hand a live buffer to another error.
 	}
 
 	switch resp.responseBodyType {
