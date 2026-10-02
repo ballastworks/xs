@@ -212,6 +212,13 @@ func (rr *reqRunner) run(ctx context.Context, firstNilOptIndex int) (_stdResp *h
 		if rr.firstErrRespSet {
 			fErr := &rr.firstErrResp
 
+			// a later error response that is not the one being returned is
+			// otherwise dropped with its body, and connection, open
+			if r := rr.resp.r; r != nil && r != fErr.r && !rr.respBodyClosed {
+				rr.respBodyClosed = true
+				bufferAndCloseBody(ctx, rr.cfg.respBodBufPool, r, "discarding a later error response")
+			}
+
 			rr.resp.r = fErr.r
 			rr.errDo = fErr.errDo
 			rr.hasErrStatusCode = fErr.hasErrStatusCode
@@ -764,7 +771,12 @@ func (rr *reqRunner) doWithRetries(ctx context.Context, reqSpanName string) {
 
 func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName string, now time.Time, failedTryCount int) {
 	ctx, cancel := context.WithDeadline(ctx, now.Add(rr.cfg.perCallTimeout))
-	defer cancel()
+	var bodyOwnsCancel bool
+	defer func() {
+		if !bodyOwnsCancel {
+			cancel()
+		}
+	}()
 
 	rr.errAuthPreDo = nil
 	rr.errDo = nil
@@ -950,6 +962,7 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 
 	if !rr.autoCloseRespBody && rr.cfg.unmarshalJsonTo == nil {
 		// not auto-closing response body and not further processing a json response
+		bodyOwnsCancel = rr.handOffBody(cancel)
 		return
 	}
 
@@ -989,9 +1002,53 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 	}
 }
 
+// handOffBody wraps a response body that is leaving the attempt unread so it
+// owns the attempt context: the per-call deadline keeps bounding its reads
+// and the context is released by its Close rather than when the attempt
+// returns, which would fail every read the caller is yet to make. It reports
+// whether the wrap happened; the attempt must cancel itself otherwise.
+//
+// A response known to have no body is handed over as-is. The transport has
+// already finished the request before returning such a response, so nothing
+// about it needs the context, and releasing it here rather than on Close
+// covers callers that never close an empty body.
+func (rr *reqRunner) handOffBody(cancel context.CancelFunc) bool {
+	b := rr.resp.r.Body
+	if b == nil || rr.respHasNoBody() {
+		return false
+	}
+
+	rr.resp.r.Body = &streamBody{ReadCloser: b, cancel: cancel}
+	return true
+}
+
+// respHasNoBody reports whether the transport delivered the response with
+// its stream already complete, using only signals that survive middleware
+// wrapping the body.
+//
+// Both transports return http.NoBody for HEAD. The HTTP/1 transport also
+// does so whenever the content length is zero, which is its own definition
+// of a bodiless response. HTTP/2 is only trusted by identity: a server may
+// declare a zero content length on HEADERS and end the stream with a later
+// empty DATA frame, and that body still needs the context until the frame
+// arrives.
+func (rr *reqRunner) respHasNoBody() bool {
+	r := rr.resp.r
+	if r.Body == http.NoBody || rr.req.Method == http.MethodHead {
+		return true
+	}
+
+	return r.ProtoMajor == 1 && r.ContentLength == 0
+}
+
 func (rr *reqRunner) doOnce(ctx context.Context, reqSpanName string, now time.Time) {
 	ctx, cancel := context.WithDeadline(ctx, now.Add(rr.cfg.perCallTimeout))
-	defer cancel()
+	var bodyOwnsCancel bool
+	defer func() {
+		if !bodyOwnsCancel {
+			cancel()
+		}
+	}()
 
 	rr.errAuthPreDo = nil
 	rr.errDo = nil
@@ -1134,6 +1191,7 @@ func (rr *reqRunner) doOnce(ctx context.Context, reqSpanName string, now time.Ti
 
 	if !rr.autoCloseRespBody && rr.cfg.unmarshalJsonTo == nil {
 		// not auto-closing response body and not further processing a json response
+		bodyOwnsCancel = rr.handOffBody(cancel)
 		return
 	}
 

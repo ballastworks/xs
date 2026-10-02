@@ -614,6 +614,13 @@ func (cfg *sharedConfig) setPerCallTimeout(d time.Duration) {
 	cfg.perCallTimeout = d
 }
 
+// PerCallTimeout bounds a single request attempt, measured from the start of
+// the attempt through reading the response body. Do consumes the body within
+// the attempt. DoStandard without a json unmarshal target hands the body to
+// the caller unread, and the same deadline keeps applying to it: a read that
+// is still pending when the deadline passes fails with an error matching
+// context.DeadlineExceeded, so the timeout must be sized for the whole
+// response, not just its headers.
 func (clientOpts) PerCallTimeout(d time.Duration) ClientOption {
 	return func(cfg *clientConfig) {
 		cfg.setPerCallTimeout(d)
@@ -1434,6 +1441,14 @@ func (fcr *FluentClientRequest) Do(ctx context.Context) (*ClientResponse, error)
 
 // DoStandard behaves exactly like Do except it returns a go standard *http.Response and it is the caller's responsibility to close the response body.
 //
+// Absent a json unmarshal target the body is handed over unread and still
+// governed by the attempt's context: PerCallTimeout keeps bounding reads of
+// it, and the context is released when the body is closed. A body that is
+// never closed holds its context, and connection, until that deadline passes.
+// A response the transport delivered without a body (HEAD, or a zero content
+// length over HTTP/1) is exempt: its context is released before this
+// function returns.
+//
 // Typically Do should be called instead of this function.
 func (c *Client) DoStandard(ctx context.Context, options ...ReqOption) (*http.Response, error) {
 	const autoCloseRespBody = false
@@ -1443,6 +1458,8 @@ func (c *Client) DoStandard(ctx context.Context, options ...ReqOption) (*http.Re
 }
 
 // DoStandard behaves exactly like Do except it returns a go standard *http.Response and it is the caller's responsibility to close the response body.
+//
+// See Client.DoStandard for how the body is bounded once it is handed over.
 //
 // Typically Do should be called instead of this function.
 func (fcr *FluentClientRequest) DoStandard(ctx context.Context) (*http.Response, error) {
