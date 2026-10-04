@@ -66,9 +66,16 @@ func logRecord(ctx context.Context, handler slog.Handler, record slog.Record) er
 		logKeyFuncName = "code.function.name"
 	)
 
-	// alloc: 2; 232 bytes
+	// A record without a PC has no caller to report, so it gets no source
+	// attributes. The log/slog Handler contract requires this: "If r.PC is
+	// zero, ignore it." It happens for records from adapters that don't
+	// capture a caller, such as the standard log package bridge slog.SetDefault
+	// installs when the log flags don't request file information.
+	hasPC := record.PC != 0
+
 	var f runtime.Frame
-	{
+	if hasPC {
+		// alloc: 2; 232 bytes
 		framesIter := runtime.CallersFrames([]uintptr{record.PC})
 		f, _ = framesIter.Next()
 	}
@@ -91,16 +98,24 @@ func logRecord(ctx context.Context, handler slog.Handler, record slog.Record) er
 			spanID = hex.AppendEncode(arrSpanID[:0], sid[:])
 		}
 
-		// alloc: 2; 48 bytes
-		record.AddAttrs(
-			slog.String(logKeyFilePath, f.File),
-			slog.String(logKeyFuncName, f.Function),
-			slog.Int(logKeyFileLine, f.Line),
-			slog.String("trace_id", string(traceID)),
-			slog.String("trace_flags", string(traceFlags)),
-			slog.String("span_id", string(spanID)),
-		)
-	} else {
+		if hasPC {
+			// alloc: 2; 48 bytes
+			record.AddAttrs(
+				slog.String(logKeyFilePath, f.File),
+				slog.String(logKeyFuncName, f.Function),
+				slog.Int(logKeyFileLine, f.Line),
+				slog.String("trace_id", string(traceID)),
+				slog.String("trace_flags", string(traceFlags)),
+				slog.String("span_id", string(spanID)),
+			)
+		} else {
+			record.AddAttrs(
+				slog.String("trace_id", string(traceID)),
+				slog.String("trace_flags", string(traceFlags)),
+				slog.String("span_id", string(spanID)),
+			)
+		}
+	} else if hasPC {
 		// zero allocs
 		record.AddAttrs(
 			slog.String(logKeyFilePath, f.File),

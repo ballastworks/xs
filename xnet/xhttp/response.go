@@ -17,7 +17,6 @@ import (
 	"github.com/ballastworks/xs/xcontext"
 	"github.com/ballastworks/xs/xcontext/xspan"
 	"github.com/ballastworks/xs/xerrors"
-	"github.com/ballastworks/xs/xlog/xslog"
 )
 
 var (
@@ -245,12 +244,6 @@ func (resp Response) getFactory() *ResponseFactory {
 	return DefaultResponseFactory()
 }
 
-func (resp Response) logger(ctx context.Context) xslog.Logger {
-
-	logf := resp.loggerFactory()
-	return logf.Logger(ctx)
-}
-
 // // TODO: also have ability to set option on response factory to act as a "default" if it does not have a lot of atomic overhead
 // type staticHandlerConfig struct{}
 // type StaticHandlerOption func(*staticHandlerConfig)
@@ -403,7 +396,7 @@ func (resp Response) StaticHandler() http.Handler {
 				handler = func(w http.ResponseWriter, r *http.Request) {
 
 					ctx := r.Context()
-					logger := rf.Logger(ctx)
+					logger := resp.loggerFactory(ctx, rf).Logger(ctx)
 					logFunc(ctx, logger, resp.errResp, sc)
 
 					next(w, r)
@@ -424,7 +417,7 @@ func (resp Response) StaticHandler() http.Handler {
 				if logFunc := rf.errRespLoggingFunc; logFunc != nil {
 
 					ctx := r.Context()
-					logger := rf.Logger(ctx)
+					logger := resp.loggerFactory(ctx, rf).Logger(ctx)
 					logFunc(ctx, logger, resp.errResp, sc)
 				}
 
@@ -460,7 +453,7 @@ func (resp Response) WriteResp(ctx context.Context, w http.ResponseWriter) {
 	if resp.errResp != nil || statusCodeInErrorRange(sc) {
 		f := resp.getFactory()
 		if logFunc := f.errRespLoggingFunc; logFunc != nil {
-			logger := resp.logger(ctx)
+			logger := resp.loggerFactory(ctx, f).Logger(ctx)
 			logFunc(ctx, logger, resp.errResp, sc)
 		}
 

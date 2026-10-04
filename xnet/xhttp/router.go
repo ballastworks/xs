@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/ballastworks/xs/internal/ctx_slog"
 	"github.com/ballastworks/xs/xcontext/xspan"
 	"github.com/ballastworks/xs/xerrors"
 	"github.com/ballastworks/xs/xlog/xslog"
@@ -133,6 +134,30 @@ type router struct {
 	errHandlerStrategy  func(errHandlerFunc) http.Handler
 	handler             http.Handler
 	ignoreTrailingSlash bool
+
+	// logfSet is true when LoggerFactory was configured rather than defaulted.
+	logfSet bool
+}
+
+// respCtx returns the ctx to render a response the router builds itself with.
+//
+// When the router has a configured logger factory it is added to ctx, so the
+// response logs through it unless the response or its response factory
+// configures one of its own.
+func (rt *router) respCtx(ctx context.Context) context.Context {
+	if !rt.logfSet {
+		return ctx
+	}
+
+	return ctx_slog.ContextWithLoggerFactory(ctx, rt.LoggerFactory)
+}
+
+// respHandler wraps a handler that renders a response the router provides so
+// the response is rendered with respCtx.
+func (rt *router) respHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(rt.respCtx(r.Context())))
+	})
 }
 
 func NewRouter(options ...RouterOption) (*router, error) {
@@ -153,10 +178,18 @@ func NewRouter(options ...RouterOption) (*router, error) {
 		nil,
 		nil,
 		cfg.ignoreTrailingSlash,
+		cfg.logfSet,
 	}
 
 	if cfg.errHandlerStrategyIsSet {
 		rt.errHandlerStrategy = cfg.errHandlerStrategy
+	}
+
+	// the default router's not found and method not allowed responses are
+	// rendered by the router too
+	if dr, ok := rt.wrappedRouter.(*defaultRouter); ok && rt.logfSet {
+		dr.NotFound = rt.respHandler(dr.NotFound)
+		dr.MethodNotAllowed = rt.respHandler(dr.MethodNotAllowed)
 	}
 
 	// prepare handler ref from base router context
@@ -198,6 +231,8 @@ func NewRouter(options ...RouterOption) (*router, error) {
 }
 
 func (rt *router) Handler(method string, path string, handler http.Handler) {
+	handler = recordRoute(path, handler)
+
 	if !rt.ignoreTrailingSlash {
 		rt.wrappedRouter.Handler(method, path, handler)
 		return
@@ -421,7 +456,7 @@ func (rt *router) defaultPanicHandler(w http.ResponseWriter, r *http.Request, re
 			rt.Logger(ctx).Error(ctx,
 				"config error: WriteObserver not in context",
 			)
-			NewInternalErrResp(err).WriteResp(ctx, w)
+			NewInternalErrResp(err).WriteResp(rt.respCtx(ctx), w)
 			return
 		}
 
@@ -449,7 +484,7 @@ func (rt *router) defaultPanicHandler(w http.ResponseWriter, r *http.Request, re
 	// render a general 500 response
 	//
 
-	NewInternalErrResp(err).WriteResp(ctx, w)
+	NewInternalErrResp(err).WriteResp(rt.respCtx(ctx), w)
 }
 
 func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
@@ -495,7 +530,7 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 					"config error: WriteObserver not in context",
 					slog.String("remediation_hint", "fix implementation: write observer middleware must be in the middleware chain to handle error responses reliably"),
 				)
-				NewInternalErrResp(err).WriteResp(ctx, w)
+				NewInternalErrResp(err).WriteResp(rt.respCtx(ctx), w)
 				return
 			}
 
@@ -558,6 +593,10 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 
 			for err != nil {
 				if v, ok := err.(http.Handler); ok {
+					if rt.logfSet {
+						r = r.WithContext(rt.respCtx(ctx))
+					}
+
 					v.ServeHTTP(w, r)
 					return
 				}
@@ -604,7 +643,7 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 				// to signal them to try again as the cause was likely due to
 				// an internal client or upstream service timing out
 
-				errRespGatewayTimeout.CausedBy(ctx, err).WriteResp(ctx, w)
+				errRespGatewayTimeout.CausedBy(ctx, err).WriteResp(rt.respCtx(ctx), w)
 				return
 			}
 
@@ -656,7 +695,7 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 
 			// TODO: test what happens if http after-read compute and reply timeout is set and reached
 
-			errRespGatewayTimeout.CausedBy(ctx, err).WriteResp(ctx, w)
+			errRespGatewayTimeout.CausedBy(ctx, err).WriteResp(rt.respCtx(ctx), w)
 			return
 		}
 
@@ -666,7 +705,7 @@ func (rt *router) defaultErrHandlerStrategy(f errHandlerFunc) http.Handler {
 
 		NewInternalErrResp(err).
 			With(WithErrRespOpts().FailSpan(true)).
-			WriteResp(ctx, w)
+			WriteResp(rt.respCtx(ctx), w)
 	})
 }
 

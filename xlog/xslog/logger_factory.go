@@ -212,9 +212,7 @@ func NewFactory(options ...LoggerFactoryOption) (LoggerFactory, error) {
 		return staticFactory{v}, nil
 	}
 
-	if fr := cfg.loggerFactoryResolver; fr != nil {
-		return fr()
-	}
-
-	return cfg.loggerFactory, nil
+	// the resolver is never nil: it is either the one specified, which
+	// validate ensures is non-nil, or the default
+	return cfg.loggerFactoryResolver()
 }

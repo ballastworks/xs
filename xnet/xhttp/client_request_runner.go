@@ -88,8 +88,12 @@ type reqRunner struct {
 
 	retryAfter time.Duration
 
-	resp         reqRunnerResp
-	teardownErrs [6]error
+	resp reqRunnerResp
+
+	// teardownErrs holds the errors finalize joins into the returned error: at
+	// most one per request outcome error (auth, do, status code, read body,
+	// unmarshal, retry) plus the two teardown body close errors.
+	teardownErrs [8]error
 
 	numTeardownErrs uint8
 
@@ -176,7 +180,11 @@ func (rr *reqRunner) run(ctx context.Context, firstNilOptIndex int) (_stdResp *h
 	if rr.cfg.retryEnabled {
 		rr.doWithRetries(ctx, reqSpanName)
 
-		rr.startTeardownSpan()
+		rr.endReqPhase()
+
+		// The response cleanup below is part of the teardown phase, so it
+		// records onto the teardown span rather than the ended request span.
+		ctx = trace.ContextWithSpan(rr.lifecycleContext, rr.teardownSpan)
 
 		// Handle the case where the response indicates the request cannot be
 		// retried and is errored and the body needs to be closed because this do
@@ -199,7 +207,7 @@ func (rr *reqRunner) run(ctx context.Context, firstNilOptIndex int) (_stdResp *h
 			}
 
 			// fallthrough to error case
-		} else if rr.errAuthPreDo != nil || rr.hasErrStatusCode || rr.errReadBody != nil || rr.errRetry != nil || rr.errUnmarshal != nil {
+		} else if rr.hasErr() {
 
 			// do nothing - fallthrough to error case
 		} else {
@@ -235,7 +243,7 @@ func (rr *reqRunner) run(ctx context.Context, firstNilOptIndex int) (_stdResp *h
 		// If retries are disabled auth failures need to be handled manually by
 		// the upper layers when it likely should be handled here.
 
-		rr.startTeardownSpan()
+		rr.endReqPhase()
 	}
 
 AFTER_RESPONSE:
@@ -244,7 +252,6 @@ AFTER_RESPONSE:
 		rr.resp.cr = newClientResponse(rr.resp.r)
 	}
 
-	rr.endOfReqSpanReached = true
 	return
 }
 
@@ -840,6 +847,10 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 			),
 		)
 	}
+
+	// parentCtx carries the request span, which outlives the attempt span
+	// started below.
+	parentCtx := ctx
 	ctx, span := otel.Tracer("").Start(ctx, reqSpanName, spanOpts...)
 	var spanEnded bool
 	defer func() {
@@ -913,6 +924,10 @@ func (rr *reqRunner) doOnceWithRetryPossible(ctx context.Context, reqSpanName st
 
 	spanEnded = true
 	span.End()
+
+	// The attempt span has ended, so errors found while processing the
+	// response are recorded on the request span instead.
+	ctx = parentCtx
 
 	// post request processing
 
@@ -1097,6 +1112,9 @@ func (rr *reqRunner) doOnce(ctx context.Context, reqSpanName string, now time.Ti
 		spanOpts = append(spanOpts, trace.WithAttributes(semconv.PeerService(rr.c.cfg.serviceName)))
 	}
 
+	// parentCtx carries the request span, which outlives the attempt span
+	// started below.
+	parentCtx := ctx
 	ctx, span := otel.Tracer("").Start(ctx, reqSpanName, spanOpts...)
 	var spanEnded bool
 	defer func() {
@@ -1164,6 +1182,10 @@ func (rr *reqRunner) doOnce(ctx context.Context, reqSpanName string, now time.Ti
 
 	spanEnded = true
 	span.End()
+
+	// The attempt span has ended, so errors found while processing the
+	// response are recorded on the request span instead.
+	ctx = parentCtx
 
 	rr.resp.r = newResp
 
@@ -1298,11 +1320,25 @@ func (rr *reqRunner) startTeardownSpan() {
 	_, rr.teardownSpan = otel.Tracer("").Start(rr.lifecycleContext, "xhttp.request.teardown")
 }
 
+// endReqPhase is called when the request phase of reqRunner.run completes
+// normally. It ends the request span with a status derived from the request
+// outcome and starts the teardown phase.
+func (rr *reqRunner) endReqPhase() {
+	rr.endOfReqSpanReached = true
+	rr.forceStartTeardownSpan()
+}
+
+// hasErr reports whether the request strategy failed.
+func (rr *reqRunner) hasErr() bool {
+	return rr.errAuthPreDo != nil || rr.errDo != nil || rr.hasErrStatusCode || rr.errReadBody != nil || rr.errUnmarshal != nil || rr.errRetry != nil
+}
+
 // forceStartTeardownSpan ensures that the teardown phase has started properly
 // while other phases have been properly terminated.
 //
-// This function is only called under circumstances that are not a normal exit
-// case of the reqRunner.run function as part of defer function gates.
+// It is called by endReqPhase when the request phase completes normally, and
+// by defer function gates when reqRunner.run exits before reaching that point
+// (a setup failure or a panic).
 //
 // The caller should only call if `rr.teardownSpan == nil`
 // as a mechanical gate that is inlined to avoid the stack
@@ -1323,7 +1359,7 @@ func (rr *reqRunner) forceStartTeardownSpan() {
 		if !rr.reqSpanStatSet {
 			if !rr.endOfReqSpanReached {
 				span.SetStatus(codes.Error, "panicking")
-			} else if rr.errDo == nil && !rr.hasErrStatusCode && rr.errReadBody == nil && rr.errUnmarshal == nil && rr.errRetry == nil {
+			} else if !rr.hasErr() {
 				span.SetStatus(codes.Ok, "")
 			} else {
 				span.SetStatus(codes.Error, "request strategy failed")
@@ -1416,6 +1452,10 @@ func (rr *reqRunner) finalize(rPtr **http.Response, crPtr **ClientResponse, errP
 		prevErrCount++
 	}
 
+	if rr.errRetry != nil {
+		prevErrCount++
+	}
+
 	if prevErrCount == 0 && rr.numTeardownErrs == 0 {
 		return
 	}
@@ -1441,6 +1481,10 @@ func (rr *reqRunner) finalize(rPtr **http.Response, crPtr **ClientResponse, errP
 		i++
 	}
 	if err := rr.errUnmarshal; err != nil {
+		rr.teardownErrs[i] = err
+		i++
+	}
+	if err := rr.errRetry; err != nil {
 		rr.teardownErrs[i] = err
 	}
 	*errPtr = errors.Join(rr.teardownErrs[:rr.numTeardownErrs]...)

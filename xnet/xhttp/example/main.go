@@ -442,8 +442,11 @@ func rcMain(ctx context.Context, cancel context.CancelCauseFunc, setRCLogger fun
 			n, err := strconv.ParseUint(s, 10, 16)
 			if err == nil {
 				v = strconv.Itoa(int(n))
+				if v != s {
+					err = fmt.Errorf("listen port %q is not in canonical form, expected %q", s, v)
+				}
 			}
-			if err != nil || v != s {
+			if err != nil {
 				logger.WithErr(ctx, err).Error(ctx, "failed to parse listen port")
 				panic(err)
 			}

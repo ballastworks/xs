@@ -36,6 +36,10 @@ func NewFluentResp() *FluentResponse {
 type ResponseFactory struct {
 	xslog.LoggerFactory
 	errRespLoggingFunc ErrRespLoggingFunc
+
+	// logfSet is true when LoggerFactory was configured rather than defaulted,
+	// which gives it precedence when resolving a response's logger factory.
+	logfSet bool
 }
 
 func NewResponseFactory(options ...ResponseFactoryOption) (*ResponseFactory, error) {
@@ -52,7 +56,7 @@ func NewResponseFactory(options ...ResponseFactoryOption) (*ResponseFactory, err
 		return nil, errors.Join(ErrBadResponseFactoryConfig, err)
 	}
 
-	return &ResponseFactory{cfg.logf, cfg.errRespLoggingFunc}, nil
+	return &ResponseFactory{cfg.logf, cfg.errRespLoggingFunc, cfg.logfSet}, nil
 }
 
 func (rf *ResponseFactory) NewInternalErr(cause error) ErrResponse {

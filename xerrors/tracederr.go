@@ -498,8 +498,6 @@ type traceStringer interface {
 	AppendText([]byte) ([]byte, error)
 }
 
-var _ traceStringer = stacktraceStringer(stackTrace(nil)) // TODO: move to tests
-
 // Stacktrace returns a stringer over the frames of the innermost traced
 // error in the chain, or nil when there are none.
 //

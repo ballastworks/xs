@@ -1,6 +1,9 @@
 package xhttp
 
 import (
+	"context"
+
+	"github.com/ballastworks/xs/internal/ctx_slog"
 	"github.com/ballastworks/xs/xlog/xslog"
 )
 
@@ -11,13 +14,28 @@ type withRespConfig struct {
 
 type WithRespOption func(*withRespConfig)
 
-func (cfg withRespConfig) loggerFactory() xslog.LoggerFactory {
+// loggerFactory returns the logger factory a response logs through when it is
+// rendered by the response factory rf in ctx. In order of precedence:
+//   - a nop factory when logging is disabled
+//   - the response's own LoggerFactory option
+//   - rf's LoggerFactory option, when it was configured
+//   - the logger factory in ctx, such as the one a Server or Router adds
+//   - the default xhttp logger factory
+func (cfg withRespConfig) loggerFactory(ctx context.Context, rf *ResponseFactory) xslog.LoggerFactory {
 	if cfg.loggerDisabled {
 		return xslog.NopFactory()
 	}
 
 	if logf := cfg.logf; logf != nil {
 		return logf
+	}
+
+	if rf.logfSet {
+		return rf.LoggerFactory
+	}
+
+	if v := ctx_slog.LoggerFactoryFromContext(ctx); v != nil {
+		return v.(xslog.LoggerFactory)
 	}
 
 	return DefaultLoggerFactory()

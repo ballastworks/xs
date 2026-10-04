@@ -173,14 +173,53 @@ type reqData struct {
 	start    time.Time
 	req      *http.Request
 	released atomic.Bool
+
+	// route holds a boxedRoute with the template of the route the request was
+	// matched to, set by the router when it dispatches the request
+	route atomic.Value
+}
+
+type boxedRoute struct {
+	v *string
+}
+
+// routeAttr returns the http.route attribute: the template of the matched
+// route once the router has recorded it, otherwise the fallback from
+// lowCardinalityRoute.
+//
+// It is resolved for each log rather than cached with the other request
+// attributes because a request can log before it is routed.
+func (rd *reqData) routeAttr() slog.Attr {
+	if route := rd.route.Load().(boxedRoute).v; route != nil {
+		return slog.String("http.route", *route)
+	}
+
+	return slog.String("http.route", lowCardinalityRoute(rd.req))
+}
+
+// recordRoute wraps a handler registered for the route template route so
+// request logs show it as http.route.
+func recordRoute(route string, next http.Handler) http.Handler {
+	boxed := boxedRoute{&route}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rd := reqDataFromContext(r.Context()); rd != nil {
+			rd.route.Store(boxed)
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func newReqData(ctx context.Context) *reqData {
-	return &reqData{
+	rd := &reqData{
 		ctx:          ctx,
 		start:        time.Now(),
 		reqLogCacher: newReqLogCacher(),
 	}
+	rd.route.Store(boxedRoute{nil})
+
+	return rd
 }
 
 func (rd *reqData) release() {
@@ -220,7 +259,7 @@ func (rd *reqData) resolveWithCachedAttrs(ctx context.Context,
 	st = xrwm.Unlocked
 
 RETURN_LOGGER:
-	attrs = append(attrs, slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
+	attrs = append(attrs, rd.routeAttr(), slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
 	return logf.Logger(ctx).WithAttrs(ctx, attrs...)
 }
 
@@ -267,7 +306,7 @@ func (rd *reqData) resolveWithCachedLogger(ctx context.Context,
 	st = xrwm.Unlocked
 
 RETURN_LOGGER:
-	return logger.WithAttrs(ctx, slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
+	return logger.WithAttrs(ctx, rd.routeAttr(), slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
 }
 
 func (rd *reqData) Value(key any) any {
@@ -326,6 +365,14 @@ func (requestLoggerFactoryOpts) CacheLogger(b bool) RequestLoggerFactoryOption {
 // TrackWrites automatically enables logger caching that CacheLogger(true)
 // would and this option must be true for the MiddlewareLogger option
 // EmitRequestCorrelationLogs(true) to work as intended.
+//
+// Warning: this option adds write tracking to each request's loggers itself.
+// The base loggers, from the LoggerFactory option or the default xslog logger
+// factory, must not already track writes through the xslog
+// LoggerOpts().TrackWrites(true) option: it is not valid to mix the two in the
+// same logger lineage. Mixing them shares one written flag across every
+// request, so once any request writes a record, later requests that write
+// nothing still emit request correlation logs.
 func (requestLoggerFactoryOpts) TrackWrites(b bool) RequestLoggerFactoryOption {
 	return func(cfg *requestLoggerFactoryConfig) {
 		cfg.trackWrites = b
@@ -369,19 +416,35 @@ func (cfg *requestLoggerFactoryConfig) validate() error {
 		logfNotSet = true
 	}
 
-	if !logfNotSet {
-		cfg.logf = newWriteTrackingLoggerFactoryWrapper(cfg.logf)
+	if logfNotSet {
+		if cfg.trackWrites {
+			cfg.logf = defaultWriteTrackingLoggerFactoryFoundation
+		} else {
+			cfg.logf = defaultLoggerFactoryFoundation
+		}
 	} else if cfg.trackWrites {
-		cfg.logf = defaultWriteTrackingLoggerFactoryFoundation
-	} else {
-		cfg.logf = defaultLoggerFactoryFoundation
+		// The supplied factory's loggers get write tracking added on every
+		// request. Check now that they can, so a factory that cannot be
+		// wrapped fails here with an error rather than while a request is
+		// being handled.
+		ctx := context.Background()
+		if _, err := newWriteTrackingLogger(ctx, cfg.logf.Logger(ctx)); err != nil {
+			return errors.Join(errors.New("logger factory cannot be wrapped with write tracking"), err)
+		}
+
+		cfg.logf = newWriteTrackingLoggerFactoryWrapper(cfg.logf)
 	}
 
 	return nil
 }
 
-var _ xslog.LoggerFactory = &xhttpLoggerFactory{} // TODO: move to test
-
+// NewRequestLoggerFactory returns a logger factory whose loggers carry
+// attributes describing the request in flight, such as its method and route.
+//
+// Warning: when using the TrackWrites option, the base loggers must not already
+// track writes through the xslog LoggerOpts().TrackWrites(true) option: it is
+// not valid to mix the two in the same logger lineage. See the TrackWrites
+// option for what goes wrong.
 func NewRequestLoggerFactory(options ...RequestLoggerFactoryOption) (*xhttpLoggerFactory, error) {
 	cfg := requestLoggerFactoryConfig{
 		// empty
@@ -398,7 +461,8 @@ func NewRequestLoggerFactory(options ...RequestLoggerFactoryOption) (*xhttpLogge
 	var attrsResolvers []attrsResolver
 	var maxAttrCount int
 	{
-		const reqStartTimeRelativeAttrCount = 1
+		// http.route and x.http.elapsed_time are added for each log
+		const perLogAttrCount = 2
 
 		resolverPlan := baseAttrs()
 
@@ -408,7 +472,7 @@ func NewRequestLoggerFactory(options ...RequestLoggerFactoryOption) (*xhttpLogge
 		resolverPlan(&resolvers)
 
 		attrsResolvers = resolvers
-		maxAttrCount = nAttrs + reqStartTimeRelativeAttrCount
+		maxAttrCount = nAttrs + perLogAttrCount
 	}
 
 	v := &xhttpLoggerFactory{xhttpLoggerInternalFactory{cfg.logf, attrsResolvers, maxAttrCount, cfg.cacheLogger}, nil}
@@ -557,10 +621,10 @@ func baseAttrs() attrsResolverPlan {
 			*attrResolvers = append(*attrResolvers, func(start time.Time, req *http.Request, attrs *[]slog.Attr) {
 				*attrs = append(*attrs,
 					slog.String("http.request.method", req.Method),
-					slog.String("http.route", lowCardinalityRoute(req)),
 					slog.Time("x.http.start", start),
 				)
-				// 3 / 3
+				// 2 / 2
+				// http.route is resolved for each log, see reqData.routeAttr
 
 				if ipStr, port, portValid := privateRemoteClientAddr(req.Header["X-Forwarded-For"], req.RemoteAddr); ipStr != "" {
 					// TODO: note that gateway PII logs should use a different approach and not trust any aspects of the X-Forwarded-For header (unless X-Forwarded-For-Signature and X-Forwarded-For-Authority are set?).
@@ -573,7 +637,7 @@ func baseAttrs() attrsResolverPlan {
 						)
 					}
 				}
-				// 2 / 5
+				// 2 / 4
 
 				// KNOW YOUR CLIENT:
 
@@ -593,11 +657,11 @@ func baseAttrs() attrsResolverPlan {
 						slog.String("x.service.vcs.repository", cm.vcsRepository),
 					)
 				}
-				// 3 / 8
+				// 3 / 7
 			})
 		}
 		resCount++
-		attrCount += 8
+		attrCount += 7
 
 		return resCount, attrCount
 	}
@@ -749,7 +813,7 @@ func MiddlewareLogger(options ...MiddlewareLoggerOption) func(http.Handler) http
 					}
 
 					req := rd.req
-					attrs := make([]slog.Attr, 0, 8)
+					attrs := make([]slog.Attr, 0, 9)
 
 					const httpSchemeLower = "http"
 					const httpsSchemeLower = "https"
@@ -772,6 +836,7 @@ func MiddlewareLogger(options ...MiddlewareLoggerOption) func(http.Handler) http
 					var versionBuf [3]byte
 
 					attrs = append(attrs,
+						rd.routeAttr(),
 						slog.String("network.protocol.name", "http"),
 						slog.String("network.protocol.version", string(appendHttpProtoVersion(versionBuf[:0], req.ProtoMajor, req.ProtoMinor))),
 						slog.String("url.scheme", scheme),
@@ -806,6 +871,9 @@ func MiddlewareLogger(options ...MiddlewareLoggerOption) func(http.Handler) http
 						}
 					}
 
+					// TODO: make the correlation log level configurable. At Info it
+					// is filtered out when the logger's level is above Info, even
+					// though another record was written in the request.
 					logger.Info(rd, "request correlation", attrs...)
 				}()
 			}
@@ -836,14 +904,14 @@ func (f *xhttpLoggerInternalFactory) Logger(ctx context.Context) xslog.Logger {
 
 	if f.cacheLogger {
 		if logger := rd.state.Load().(reqLogCacheState).logger; logger != nil {
-			return logger.WithAttrs(ctx, slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
+			return logger.WithAttrs(ctx, rd.routeAttr(), slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
 		}
 
 		return rd.resolveWithCachedLogger(ctx, logf, f.maxAttrCount, f.attrsResolvers...)
 	}
 
 	if attrs := rd.state.Load().(reqLogCacheState).attrs; attrs != nil {
-		attrs = append(attrs, slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
+		attrs = append(attrs, rd.routeAttr(), slog.Duration(reqLoggerElapsedTimeKey, time.Since(rd.start)))
 		return logf.Logger(ctx).WithAttrs(ctx, attrs...)
 	}
 

@@ -316,7 +316,7 @@ func (wo *writeObserver) disconnectDetectedHandler(ctx context.Context, w http.R
 
 		logger.WithErr(ctx, err).Debug(ctx,
 			errMsg,
-			slog.Int("http.status_code", attemptedStatusCode),
+			slog.Int("attempted_status_code", attemptedStatusCode),
 		)
 
 		return false

@@ -90,6 +90,14 @@ func (loggerOpts) Stream(w io.Writer) LoggerOption {
 // TrackWrites should not be called under most circumstances by functions
 // outside xs. This function causes Logger instances to track if a record was
 // written to the handler and facilitates EmitRequestCorrelationLogs behaviors.
+//
+// Warning: it is not valid to enable write tracking at more than one level of
+// a logger's lineage. A logger created with TrackWrites(true), or derived from
+// one, must not be the base of an xhttp request logger factory that uses its
+// own TrackWrites(true) option, whether supplied through its LoggerFactory
+// option or the default xslog logger factory. Mixing them shares one written
+// flag across every request, so once any request writes a record, later
+// requests that write nothing still emit request correlation logs.
 func (loggerOpts) TrackWrites(b bool) LoggerOption {
 	return func(cfg *loggerConfig) {
 		cfg.trackWrites = b
@@ -251,10 +259,12 @@ func New(options ...LoggerOption) (Logger, error) {
 	if cfg.handlerSet {
 		switch h := cfg.handler.(type) {
 		case *structLoggerGrouped:
-			if cfg.levelSet {
-				// requires recursive reconstruction of the structLoggerGrouped which is not implemented and most likely will never be a wanted feature
-				return nil, errors.Join(ErrBadLoggerConfig, errors.New("a structLoggerGrouped cannot be used in the option loggerOpts.Handler"))
-			}
+			// requires recursive reconstruction of the structLoggerGrouped which is not implemented and most likely will never be a wanted feature
+			//
+			// This applies with or without a level: wrapping the handler in a
+			// new logger would run logRecord in both loggers and write the
+			// source attributes twice, once inside the group.
+			return nil, errors.Join(ErrBadLoggerConfig, errors.New("LoggerOpts().Handler cannot be a handler created by WithGroup on a logger's SlogHandler"))
 		case slogStructLogger:
 			// some cheap memory saving techniques given we know the exact internal composition of this handler type
 			//

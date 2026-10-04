@@ -27,26 +27,28 @@ type defaultWriteTrackingLoggerFactoryFoundationProxy struct {
 	defaultLoggerFactoryFoundationProxy
 }
 
+// newWriteTrackingLogger returns logger with write tracking added, which the
+// request correlation log relies on.
+func newWriteTrackingLogger(ctx context.Context, logger xslog.Logger) (xslog.Logger, error) {
+	op := xslog.LoggerOpts()
+
+	// TODO: remove the need to convert to a slog.Handler
+	return xslog.New(
+		op.Handler(logger.SlogHandler(ctx)),
+		op.TrackWrites(true),
+	)
+}
+
 func checkDefaultWriteTrackingLoggerFactoryFoundationProxyError(err error) {
 	if err == nil {
 		return
 	}
 
-	panic(fmt.Errorf("should be unreachable: error from defaultTrackedLoggerFactoryFoundationProxy: %w", err))
+	panic(fmt.Errorf("xhttp request logger: cannot add write tracking to the logger from the default xslog logger factory: %w", err))
 }
 
 func (defaultWriteTrackingLoggerFactoryFoundationProxy) Logger(ctx context.Context) xslog.Logger {
-	logger := xslog.DefaultFactory().Logger(ctx)
-
-	op := xslog.LoggerOpts()
-
-	// TODO: remove the need to convert to a slog.Handler
-	sh := logger.SlogHandler(ctx)
-
-	logger, err := xslog.New(
-		op.Handler(sh),
-		op.TrackWrites(true),
-	)
+	logger, err := newWriteTrackingLogger(ctx, xslog.DefaultFactory().Logger(ctx))
 	checkDefaultWriteTrackingLoggerFactoryFoundationProxyError(err)
 
 	return logger
@@ -57,7 +59,7 @@ func checkTrackingLoggerFactoryWrapperCallLoggerError(err error) {
 		return
 	}
 
-	panic(fmt.Errorf("should be unreachable: error from writeTrackingLoggerFactoryWrapper.Logger: %w", err))
+	panic(fmt.Errorf("xhttp request logger: cannot add write tracking to the logger from the LoggerFactory option: %w", err))
 }
 
 type trackingLoggerFactoryWrapper struct {
@@ -65,17 +67,7 @@ type trackingLoggerFactoryWrapper struct {
 }
 
 func (w *trackingLoggerFactoryWrapper) Logger(ctx context.Context) xslog.Logger {
-	logger := w.LoggerFactory.Logger(ctx)
-
-	op := xslog.LoggerOpts()
-
-	// TODO: remove the need to convert to a slog.Handler
-	sh := logger.SlogHandler(ctx)
-
-	logger, err := xslog.New(
-		op.Handler(sh),
-		op.TrackWrites(true),
-	)
+	logger, err := newWriteTrackingLogger(ctx, w.LoggerFactory.Logger(ctx))
 	checkTrackingLoggerFactoryWrapperCallLoggerError(err)
 
 	return logger

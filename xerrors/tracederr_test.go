@@ -25,6 +25,10 @@ func BenchmarkWriteStacktrace(b *testing.B) {
 	b.StopTimer()
 }
 
+// ensures the stringer Stacktrace returns can be rendered both as a string and
+// appended as text to a buffer.
+var _ traceStringer = stacktraceStringer(stackTrace(nil))
+
 func Test_traceStringer(t *testing.T) {
 	var pcs []uintptr
 
