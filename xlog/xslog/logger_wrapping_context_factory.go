@@ -222,6 +222,13 @@ func (w *LoggerWrappingContextFactory) LogUnchecked(level slog.Level, msg string
 	logger.Handle(ctx, record)
 }
 
+// SpanErr behaves the same as Logger.SpanErr: it always calls
+// xspan.RecordError and, when err is non-nil, also adds err to the log record
+// exactly as WithErr would.
+//
+// WithErr returns a Logger rather than a LoggerWrappingContextFactory. When
+// calling SpanErr on that Logger, err must be nil; see Logger.SpanErr.
+//
 //go:noinline
 func (w *LoggerWrappingContextFactory) SpanErr(err error, msg string, attrs ...slog.Attr) {
 	const level = slog.LevelError
@@ -242,6 +249,10 @@ func (w *LoggerWrappingContextFactory) SpanErr(err error, msg string, attrs ...s
 
 	record := slog.NewRecord(now, level, msg, pcs[0])
 
+	if err != nil {
+		logger = logger.WithErr(ctx, err)
+	}
+
 	if len(attrs) != 0 {
 		record.AddAttrs(attrs...)
 	}
@@ -249,6 +260,13 @@ func (w *LoggerWrappingContextFactory) SpanErr(err error, msg string, attrs ...s
 	logger.Handle(ctx, record)
 }
 
+// SpanFail behaves the same as Logger.SpanFail: it always calls xspan.Fail
+// and, when err is non-nil, also adds err to the log record exactly as WithErr
+// would.
+//
+// WithErr returns a Logger rather than a LoggerWrappingContextFactory. When
+// calling SpanFail on that Logger, err must be nil; see Logger.SpanFail.
+//
 //go:noinline
 func (w *LoggerWrappingContextFactory) SpanFail(err error, msg string, attrs ...slog.Attr) {
 	const level = slog.LevelError
@@ -268,6 +286,10 @@ func (w *LoggerWrappingContextFactory) SpanFail(err error, msg string, attrs ...
 	runtime.Callers(2, pcs[:])
 
 	record := slog.NewRecord(now, level, msg, pcs[0])
+
+	if err != nil {
+		logger = logger.WithErr(ctx, err)
+	}
 
 	if len(attrs) != 0 {
 		record.AddAttrs(attrs...)

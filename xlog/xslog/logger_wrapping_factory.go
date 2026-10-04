@@ -193,6 +193,10 @@ func (w *LoggerWrappingFactory) SpanErr(ctx context.Context, err error, msg stri
 
 	record := slog.NewRecord(now, level, msg, pcs[0])
 
+	if err != nil {
+		logger = logger.WithErr(ctx, err)
+	}
+
 	if len(attrs) != 0 {
 		record.AddAttrs(attrs...)
 	}
@@ -217,6 +221,10 @@ func (w *LoggerWrappingFactory) SpanFail(ctx context.Context, err error, msg str
 	runtime.Callers(2, pcs[:])
 
 	record := slog.NewRecord(now, level, msg, pcs[0])
+
+	if err != nil {
+		logger = logger.WithErr(ctx, err)
+	}
 
 	if len(attrs) != 0 {
 		record.AddAttrs(attrs...)

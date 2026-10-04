@@ -168,6 +168,15 @@ type Logger interface {
 
 	// extended functionality
 
+	// WithErr returns a logger that adds err to every log record it emits.
+	// The error attributes come after the attributes the logger already has
+	// and before any attributes added later, including those passed to a
+	// logging call.
+	//
+	// On a logger derived from WithErr, SpanErr and SpanFail must only be
+	// called with a nil err. Any non-nil err, even one different from the err
+	// given to WithErr, adds a second set of error attributes under the same
+	// keys. See SpanErr and SpanFail for what a nil err does there.
 	WithErr(ctx context.Context, err error) Logger
 	WithAttrs(ctx context.Context, attrs ...slog.Attr) Logger
 	SlogHandler(ctx context.Context) slog.Handler
@@ -179,13 +188,37 @@ type Logger interface {
 	// SpanErr is the same as Error except it also records that an error happened
 	// in the span which does not necessarily mean the span has failed.
 	//
-	// It is syntactic sugar that always calls xspan.RecordError.
+	// It is syntactic sugar that always calls xspan.RecordError and, when err
+	// is non-nil, also adds err to the log record ahead of attrs, exactly as
+	// WithErr would.
+	//
+	// On a logger derived from WithErr, the caller takes responsibility for
+	// only calling SpanErr with a nil err. Any non-nil err, even one different
+	// from the err given to WithErr, adds a second set of error attributes
+	// under the same keys.
+	//
+	// When SpanErr is called with a nil err on a logger derived from WithErr,
+	// the log record contains only the error given to WithErr, and the span
+	// records only msg because the error given to WithErr is never passed to
+	// xspan.RecordError.
 	SpanErr(ctx context.Context, err error, msg string, attrs ...slog.Attr)
 
 	// SpanFail is the same as Error except it also records that an error happened
 	// in the span and that the span has failed.
 	//
-	// It is syntactic sugar that always calls xspan.Fail.
+	// It is syntactic sugar that always calls xspan.Fail and, when err is
+	// non-nil, also adds err to the log record ahead of attrs, exactly as
+	// WithErr would.
+	//
+	// On a logger derived from WithErr, the caller takes responsibility for
+	// only calling SpanFail with a nil err. Any non-nil err, even one different
+	// from the err given to WithErr, adds a second set of error attributes
+	// under the same keys.
+	//
+	// When SpanFail is called with a nil err on a logger derived from WithErr,
+	// the log record contains only the error given to WithErr, and the span is
+	// marked failed with only msg recorded because the error given to WithErr
+	// is never passed to xspan.Fail.
 	SpanFail(ctx context.Context, err error, msg string, attrs ...slog.Attr)
 }
 
@@ -215,16 +248,23 @@ func New(options ...LoggerOption) (Logger, error) {
 	// - *structLogger
 	// - *structLoggerWriteTracked (always wraps a *structLogger)
 
-	if cfg.levelSet && cfg.handlerSet {
+	if cfg.handlerSet {
 		switch h := cfg.handler.(type) {
 		case *structLoggerGrouped:
-			// requires recursive reconstruction of the structLoggerGrouped which is not implemented and most likely will never be a wanted feature
-			return nil, errors.Join(ErrBadLoggerConfig, errors.New("a structLoggerGrouped cannot be used in the option loggerOpts.Handler"))
+			if cfg.levelSet {
+				// requires recursive reconstruction of the structLoggerGrouped which is not implemented and most likely will never be a wanted feature
+				return nil, errors.Join(ErrBadLoggerConfig, errors.New("a structLoggerGrouped cannot be used in the option loggerOpts.Handler"))
+			}
 		case slogStructLogger:
 			// some cheap memory saving techniques given we know the exact internal composition of this handler type
+			//
+			// Reusing the wrapped logger is also required for correctness:
+			// wrapping it in another logger would run logRecord twice and
+			// duplicate the source attributes of every record. When no level
+			// is set the wrapped logger keeps its own level.
 			switch v := h.w.(type) {
 			case *structLogger:
-				if v.levelValid && v.level == cfg.level {
+				if !cfg.levelSet || (v.levelValid && v.level == cfg.level) {
 					if cfg.trackWrites {
 						return &structLoggerWriteTracked{w: v}, nil
 					}
@@ -237,7 +277,7 @@ func New(options ...LoggerOption) (Logger, error) {
 				}
 				return s, nil
 			case *structLoggerWriteTracked:
-				if v.w.levelValid && v.w.level == cfg.level {
+				if !cfg.levelSet || (v.w.levelValid && v.w.level == cfg.level) {
 					return v, nil
 				}
 
@@ -245,7 +285,9 @@ func New(options ...LoggerOption) (Logger, error) {
 				if handledRecPtr == nil {
 					handledRecPtr = &v.handledRec
 				}
-				return &structLoggerWriteTracked{w: v.w, handledRecPtr: handledRecPtr}, nil
+
+				s := &structLogger{v.w.handler, cfg.level, true}
+				return &structLoggerWriteTracked{w: s, handledRecPtr: handledRecPtr}, nil
 			default:
 				panic(panicUnexpectedLoggerTypeInSlogStructLogger)
 			}

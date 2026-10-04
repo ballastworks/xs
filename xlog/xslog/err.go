@@ -16,3 +16,14 @@ func errAttrs(err error) []slog.Attr {
 
 	return []slog.Attr{slog.Any(ErrorLogKey, err)}
 }
+
+// addErrAttrs is the same as errAttrs except it adds the error attributes
+// directly to the record rather than allocating a slice to hold them.
+func addErrAttrs(r *slog.Record, err error) {
+	if v := xerrors.Stacktrace(err); v != nil {
+		r.AddAttrs(slog.Any(ErrorLogKey, err), slog.String(StacktraceLogKey, v.String()))
+		return
+	}
+
+	r.AddAttrs(slog.Any(ErrorLogKey, err))
+}

@@ -133,6 +133,23 @@ func (s *structLogger) handle(ctx context.Context, pc uintptr, time time.Time, l
 	}
 }
 
+// handleErr is the same as handle except a non-nil err has its attributes
+// placed ahead of attrs, which is where WithErr would have placed them.
+func (s *structLogger) handleErr(ctx context.Context, pc uintptr, time time.Time, level slog.Level, err error, msg string, attrs ...slog.Attr) {
+	record := slog.NewRecord(time, level, msg, pc)
+
+	if err != nil {
+		addErrAttrs(&record, err)
+	}
+
+	record.AddAttrs(attrs...)
+
+	if logErr := logRecord(ctx, s.handler, record); logErr != nil {
+		// ignore the error, but at least record in the span
+		xspan.RecordError(ctx, logErr, "")
+	}
+}
+
 //go:noinline
 func (s *structLogger) Debug(ctx context.Context, msg string, attrs ...slog.Attr) {
 	const level = slog.LevelDebug
@@ -212,7 +229,7 @@ func (s *structLogger) SpanErr(ctx context.Context, err error, msg string, attrs
 	pcs := [1]uintptr{}
 	runtime.Callers(2, pcs[:])
 
-	s.handle(ctx, pcs[0], now, level, msg, attrs...)
+	s.handleErr(ctx, pcs[0], now, level, err, msg, attrs...)
 }
 
 //go:noinline
@@ -230,7 +247,7 @@ func (s *structLogger) SpanFail(ctx context.Context, err error, msg string, attr
 	pcs := [1]uintptr{}
 	runtime.Callers(2, pcs[:])
 
-	s.handle(ctx, pcs[0], now, level, msg, attrs...)
+	s.handleErr(ctx, pcs[0], now, level, err, msg, attrs...)
 }
 
 //go:noinline

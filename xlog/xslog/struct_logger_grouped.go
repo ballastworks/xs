@@ -67,5 +67,7 @@ func (s *structLoggerGrouped) WithGroup(name string) slog.Handler {
 		return s
 	}
 
-	return &structLoggerGrouped{s.handler, name, nil, s.level, s.levelValid}
+	// Wrapping s rather than s.handler nests the new group inside this one so
+	// this group and its attributes are kept.
+	return &structLoggerGrouped{s, name, nil, s.level, s.levelValid}
 }

@@ -218,6 +218,10 @@ func SpanErr(req *http.Request, err error, msg string, attrs ...slog.Attr) {
 
 	record := slog.NewRecord(now, level, msg, pcs[0])
 
+	if err != nil {
+		logger = logger.WithErr(ctx, err)
+	}
+
 	if len(attrs) != 0 {
 		record.AddAttrs(attrs...)
 	}
@@ -245,6 +249,10 @@ func SpanFail(req *http.Request, err error, msg string, attrs ...slog.Attr) {
 	runtime.Callers(2, pcs[:])
 
 	record := slog.NewRecord(now, level, msg, pcs[0])
+
+	if err != nil {
+		logger = logger.WithErr(ctx, err)
+	}
 
 	if len(attrs) != 0 {
 		record.AddAttrs(attrs...)

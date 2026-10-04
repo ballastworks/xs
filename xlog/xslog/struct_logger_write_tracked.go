@@ -42,6 +42,11 @@ func (s *structLoggerWriteTracked) handle(ctx context.Context, pc uintptr, time 
 	s.w.handle(ctx, pc, time, level, msg, attrs...)
 }
 
+func (s *structLoggerWriteTracked) handleErr(ctx context.Context, pc uintptr, time time.Time, level slog.Level, err error, msg string, attrs ...slog.Attr) {
+	s.trackRecordWritten()
+	s.w.handleErr(ctx, pc, time, level, err, msg, attrs...)
+}
+
 func (s *structLoggerWriteTracked) Handle(ctx context.Context, record slog.Record) error {
 	s.trackRecordWritten()
 	return s.w.Handle(ctx, record)
@@ -156,7 +161,7 @@ func (s *structLoggerWriteTracked) SpanErr(ctx context.Context, err error, msg s
 	pcs := [1]uintptr{}
 	runtime.Callers(2, pcs[:])
 
-	s.handle(ctx, pcs[0], now, level, msg, attrs...)
+	s.handleErr(ctx, pcs[0], now, level, err, msg, attrs...)
 }
 
 //go:noinline
@@ -174,7 +179,7 @@ func (s *structLoggerWriteTracked) SpanFail(ctx context.Context, err error, msg 
 	pcs := [1]uintptr{}
 	runtime.Callers(2, pcs[:])
 
-	s.handle(ctx, pcs[0], now, level, msg, attrs...)
+	s.handleErr(ctx, pcs[0], now, level, err, msg, attrs...)
 }
 
 func (s *structLoggerWriteTracked) withAttrs(attrs ...slog.Attr) *structLoggerWriteTracked {

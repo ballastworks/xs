@@ -204,6 +204,14 @@ func SpanErr(ctx context.Context, err error, msg string, attrs ...slog.Attr) {
 
 	record := slog.NewRecord(now, level, msg, pcs[0])
 
+	if err != nil {
+		logger = logger.WithErr(ctx, err)
+	}
+
+	if len(attrs) != 0 {
+		record.AddAttrs(attrs...)
+	}
+
 	logger.Handle(ctx, record)
 }
 
@@ -225,6 +233,14 @@ func SpanFail(ctx context.Context, err error, msg string, attrs ...slog.Attr) {
 	runtime.Callers(2, pcs[:])
 
 	record := slog.NewRecord(now, level, msg, pcs[0])
+
+	if err != nil {
+		logger = logger.WithErr(ctx, err)
+	}
+
+	if len(attrs) != 0 {
+		record.AddAttrs(attrs...)
+	}
 
 	logger.Handle(ctx, record)
 }
