@@ -232,6 +232,21 @@ func (srvOpts) NoWriteTimeout() SrvOption {
 	}
 }
 
+// IdleTimeout is the same as setting http.Server's IdleTimeout: the
+// maximum amount of time the server keeps an idle keep-alive connection
+// open while waiting for the next request.
+//
+// When not specified the default is 75 seconds.
+//
+// The default is tuned for the average case where connection reuse is
+// ideal and happens behind some kind of proxy or coordinator (such as a
+// load balancer) that has its own idle timeout policy. That upstream idle
+// timeout typically must be less than this value to be effective:
+// otherwise the server may close a connection the proxy still considers
+// reusable and requests can fail on the closed connection.
+//
+// IdleTimeout should not be called with a zero duration to disable idle
+// timeouts. Instead use NoIdleTimeout().
 func (srvOpts) IdleTimeout(d time.Duration) SrvOption {
 	return func(cfg *srvConfig) {
 		cfg.idleTimeoutSet = true

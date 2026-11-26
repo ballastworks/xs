@@ -24,6 +24,13 @@ const (
 
 	defaultServerReadTimeout  = time.Second * 5
 	defaultServerWriteTimeout = time.Hour * 4 // anything is better than infinity by default
+
+	// defaultServerIdleTimeout is the keep-alive idle connection timeout
+	// applied when the caller has not configured one.
+	//
+	// If this value ever changes then the docstring of SrvOpts().IdleTimeout
+	// (server_options.go) must be updated to match.
+	defaultServerIdleTimeout = time.Second * 75
 )
 
 var (
@@ -524,9 +531,13 @@ func (srv *Server) listenAndServe(ctx context.Context, logger xslog.Logger) erro
 			srv.server.WriteTimeout = srv.lsCfg.writeTimeout
 		}
 
-		// note: idleTimeout is the only setting that the standard sdk maps
-		// a zero value to a functionally defensive greater than zero value
-		if (srv.lsCfg.flags & lsFlagHasIdleTimeout) != 0 {
+		// note: when idle timeout is zero the standard sdk falls back to
+		// the read timeout, so an explicit default is applied instead
+		if (srv.lsCfg.flags & lsFlagHasIdleTimeout) == 0 {
+			if srv.server.IdleTimeout == 0 {
+				srv.server.IdleTimeout = defaultServerIdleTimeout
+			}
+		} else {
 			srv.server.IdleTimeout = srv.lsCfg.idleTimeout
 		}
 
